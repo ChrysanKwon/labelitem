@@ -312,7 +312,7 @@ class Canvas(QLabel):
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
-        MainWindow.setWindowTitle("Custom AI Labeler v1.3")
+        MainWindow.setWindowTitle("LabelItem")
         MainWindow.resize(1280, 800)
 
         self.central_widget = QWidget()
@@ -337,6 +337,12 @@ class Ui_MainWindow(object):
         self.btn_export_dataset.setFixedHeight(44)
         self.btn_export_dataset.setStyleSheet(
             "background-color: #1565c0; color: white; font-weight: bold; border-radius: 5px;"
+        )
+
+        self.btn_auto_annotate = QPushButton("🤖 Auto Annotate")
+        self.btn_auto_annotate.setFixedHeight(36)
+        self.btn_auto_annotate.setStyleSheet(
+            "background-color: #2e7d32; color: white; font-weight: bold; border-radius: 4px;"
         )
 
         self.btn_check_mode = QPushButton("🔍 Check Mode")
@@ -374,6 +380,8 @@ class Ui_MainWindow(object):
         self.left_bar.addSpacing(16)
         self.left_bar.addWidget(self.btn_export_dataset)
         self.left_bar.addSpacing(4)
+        self.left_bar.addWidget(self.btn_auto_annotate)
+        self.left_bar.addSpacing(4)
         self.left_bar.addWidget(self.btn_check_mode)
         self.left_bar.addStretch()
         self.left_bar.addWidget(self.bottom_left_stack, stretch=2)
@@ -384,13 +392,16 @@ class Ui_MainWindow(object):
         self.check_view = QListWidget()
         self.check_view.setViewMode(QListWidget.ViewMode.IconMode)
         self.check_view.setIconSize(QSize(160, 120))
+        self.check_view.setGridSize(QSize(176, 148))
         self.check_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.check_view.setMovement(QListWidget.Movement.Static)
         self.check_view.setSpacing(6)
         self.check_view.setUniformItemSizes(True)
+        self.check_view.setWordWrap(True)
         self.check_view.setStyleSheet(
             "QListWidget { background-color: #1e1e1e; color: #ccc; border: 2px solid #333; }"
-            "QListWidget::item:selected { background-color: #6a1b9a; }"
+            "QListWidget::item { color: #aaa; font-size: 10px; }"
+            "QListWidget::item:selected { background-color: #6a1b9a; color: white; }"
         )
 
         self.center_stack = QStackedWidget()

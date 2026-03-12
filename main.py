@@ -1,13 +1,15 @@
 import sys
 import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog,
-                               QListWidget, QListWidgetItem, QMessageBox, QLineEdit)
+                               QListWidget, QListWidgetItem, QMessageBox,
+                               QLineEdit, QProgressDialog)
 from PySide6.QtGui import QPixmap, QBrush, QIcon
-from PySide6.QtCore import Qt, QTimer, QEvent
-from ui_layout import Ui_MainWindow, CLASS_COLORS
-import config
-import io_labels
-from export_dialog import ExportDialog
+from PySide6.QtCore import Qt, QTimer, QEvent, QThread
+from app.ui_layout import Ui_MainWindow, CLASS_COLORS
+from app import config
+from app import io_labels
+from app.export_dialog import ExportDialog
+from app.auto_annotate_dialog import AutoAnnotateDialog, AnnotateWorker
 
 
 class SimpleLabeler(QMainWindow):
@@ -18,6 +20,8 @@ class SimpleLabeler(QMainWindow):
         self.image_dir        = ""
         self.save_dir         = ""
         self.current_img_name = ""
+        self._annotate_thread = None
+        self._annotate_worker = None
 
         # Load key scheme from config ("arrows" or "ad")
         _nav = config.load().get("nav_keys", "arrows")
@@ -32,6 +36,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_img_dir.clicked.connect(self.select_img_dir)
         self.ui.btn_save_dir.clicked.connect(self.select_save_dir)
         self.ui.btn_export_dataset.clicked.connect(self.export_dataset)
+        self.ui.btn_auto_annotate.clicked.connect(self.auto_annotate)
         self.ui.btn_check_mode.toggled.connect(self.toggle_check_mode)
         self.ui.file_list.itemClicked.connect(self.load_image)
         self.ui.check_class_list.itemClicked.connect(self.on_check_class_selected)
@@ -127,11 +132,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.canvas.set_image(QPixmap(img_path))
 
         txt_path = self._txt_path_for(self.current_img_name)
-        shapes, shape_classes = io_labels.load_yolo(
-            txt_path,
-            self.ui.canvas.get_display_rect(),
-            self.ui.canvas.original_size,
-        )
+        shapes, shape_classes = io_labels.load_yolo(txt_path)
         self.ui.canvas.shapes        = shapes
         self.ui.canvas.shape_classes = shape_classes
         self.ui.canvas.update()
@@ -158,13 +159,7 @@ class SimpleLabeler(QMainWindow):
             if os.path.exists(txt_path):
                 os.remove(txt_path)
             return
-        io_labels.save_yolo(
-            txt_path,
-            canvas.shapes,
-            canvas.shape_classes,
-            canvas.get_display_rect(),
-            canvas.original_size,
-        )
+        io_labels.save_yolo(txt_path, canvas.shapes, canvas.shape_classes)
 
     # ── Box operations ────────────────────────────────────────────────────────
 
@@ -172,13 +167,17 @@ class SimpleLabeler(QMainWindow):
         return self.ui.class_list.currentRow()
 
     def _shape_label(self, shape_idx):
-        rect    = self.ui.canvas.shapes[shape_idx]
+        cx, cy, nw, nh = self.ui.canvas.shapes[shape_idx]
         cls_idx = self.ui.canvas.shape_classes[shape_idx]
-        if 0 <= cls_idx < self.ui.class_list.count():
-            cls_name = self.ui.class_list.item(cls_idx).text()
-        else:
-            cls_name = "unassigned"
-        return f"[{cls_name}] {rect.x()},{rect.y()} {rect.width()}×{rect.height()}"
+        cls_name = (self.ui.class_list.item(cls_idx).text()
+                    if 0 <= cls_idx < self.ui.class_list.count() else "unassigned")
+        if self.ui.canvas.original_size:
+            iw = self.ui.canvas.original_size.width()
+            ih = self.ui.canvas.original_size.height()
+            x = round((cx - nw / 2) * iw); y = round((cy - nh / 2) * ih)
+            w = round(nw * iw);             h = round(nh * ih)
+            return f"[{cls_name}] {x},{y} {w}×{h}"
+        return f"[{cls_name}] {cx:.3f},{cy:.3f}"
 
     def on_rectangle_drawn(self):
         cls_idx = self._current_class_idx()
@@ -383,6 +382,114 @@ class SimpleLabeler(QMainWindow):
                 self.ui.file_list.setCurrentRow(i)
                 self.load_image(self.ui.file_list.item(i))
                 break
+
+    # ── Auto annotate ─────────────────────────────────────────────────────────
+
+    def auto_annotate(self):
+        if not self.image_dir:
+            QMessageBox.warning(self, "No Image Directory",
+                                "Please select an image directory first.")
+            return
+        if not self.save_dir:
+            QMessageBox.warning(self, "No Label Directory",
+                                "Please select a label directory first.")
+            return
+
+        dlg = AutoAnnotateDialog(self)
+        if dlg.exec() != AutoAnnotateDialog.DialogCode.Accepted:
+            return
+
+        model_path = dlg.model_path
+        conf = dlg.conf()
+
+        reply = QMessageBox.warning(
+            self, "Overwrite Labels?",
+            "This will overwrite ALL existing label files (.txt) in the label directory.\n\n"
+            "Are you sure you want to continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        try:
+            import ultralytics  # noqa: F401 — check install before spawning thread
+        except ImportError:
+            QMessageBox.critical(self, "Ultralytics Not Installed",
+                                 "Please run:  pip install ultralytics")
+            return
+
+        img_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        images = [f for f in os.listdir(self.image_dir)
+                  if os.path.splitext(f)[1].lower() in img_exts]
+        if not images:
+            QMessageBox.information(self, "No Images",
+                                    "No images found in the image directory.")
+            return
+
+        self._autosave_yolo()
+
+        # Progress dialog — disable auto-close so it doesn't fire canceled when done
+        progress = QProgressDialog("Loading model…", "Cancel", 0, len(images), self)
+        progress.setWindowTitle("Auto Annotate")
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumWidth(400)
+        progress.setAutoClose(False)
+        progress.setAutoReset(False)
+        progress.setValue(0)
+        progress.show()
+
+        # Worker + thread
+        worker = AnnotateWorker(model_path, conf, images, self.image_dir, self.save_dir)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+
+        worker.progress.connect(lambda cur, total, fname: (
+            progress.setValue(cur),
+            progress.setLabelText(f"[{cur}/{total}] {fname}"),
+        ))
+        progress.canceled.connect(worker.cancel)
+
+        def on_finished(errors):
+            # Thread is still running — switch button to Finish, don't close yet
+            progress.canceled.disconnect(worker.cancel)
+            progress.setLabelText(f"Done — {len(images)} image(s) annotated.")
+            progress.setCancelButtonText("Finish")
+
+            def on_finish_clicked():
+                progress.close()
+                thread.quit()
+
+                try:
+                    self._load_classes()
+                    if self.current_img_name:
+                        txt_path = self._txt_path_for(self.current_img_name)
+                        shapes, shape_classes = io_labels.load_yolo(txt_path)
+                        self.ui.canvas.shapes        = shapes
+                        self.ui.canvas.shape_classes = shape_classes
+                        self.ui.canvas.update()
+                        self._refresh_shape_list()
+                except Exception as e:
+                    QMessageBox.critical(self, "Auto Annotate — Post-process Error", str(e))
+                    return
+
+                if errors:
+                    QMessageBox.warning(self, "Auto Annotate — Some Errors",
+                                        f"Completed with {len(errors)} error(s):\n\n" +
+                                        "\n".join(errors[:10]))
+
+            progress.canceled.connect(on_finish_clicked)
+
+        # Wire lifecycle: thread done → schedule deletion
+        worker.finished.connect(on_finished)
+        thread.finished.connect(thread.deleteLater)
+        thread.finished.connect(worker.deleteLater)
+        thread.started.connect(worker.run)
+        thread.start()
+
+        # Keep references alive until thread.deleteLater fires
+        self._annotate_thread = thread
+        self._annotate_worker = worker
 
     # ── Dataset export ────────────────────────────────────────────────────────
 

@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                                QLabel, QDialogButtonBox, QFileDialog, QMessageBox)
 from PySide6.QtCore import Qt
 import os
-import io_labels
+from . import io_labels
 
 
 class ExportDialog(QDialog):
