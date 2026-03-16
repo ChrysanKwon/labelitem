@@ -92,6 +92,7 @@ class Canvas(QLabel):
         self.current_pixmap = None
         self.original_size  = None   # QSize, original image dimensions
 
+        self.draw_mode      = False   # W key toggles; always draws, never selects
         self.mode           = 'idle'
         self.selected_index = -1
         self.active_handle  = -1
@@ -191,6 +192,14 @@ class Canvas(QLabel):
             return
         pos = event.position().toPoint()
 
+        if self.draw_mode:
+            self.selected_index = -1
+            self.mode  = 'drawing'
+            self.begin = self._clamp_to_image(pos)
+            self.end   = self.begin
+            self.update()
+            return
+
         if self.selected_index >= 0:
             _wrect = self._yolo_to_wrect(*self.shapes[self.selected_index])
             h = self._handle_at(pos, _wrect)
@@ -210,26 +219,45 @@ class Canvas(QLabel):
             self.update()
             return
 
+        # Normal mode, clicked on empty space → do nothing (no accidental drawing)
         self.selected_index = -1
-        self.mode  = 'drawing'
-        self.begin = pos
-        self.end   = pos
         self.update()
+
+    def _clamp_to_image(self, pos: QPoint) -> QPoint:
+        dr = self.get_display_rect()
+        if dr.isEmpty():
+            return pos
+        return QPoint(
+            max(dr.left(), min(dr.right(),  pos.x())),
+            max(dr.top(),  min(dr.bottom(), pos.y())),
+        )
+
+    def _clamp_rect_to_image(self, rect: QRect) -> QRect:
+        """Clamp rect so it stays fully inside the image display area."""
+        dr = self.get_display_rect()
+        if dr.isEmpty():
+            return rect
+        x = max(dr.left(), min(rect.x(), dr.right()  + 1 - rect.width()))
+        y = max(dr.top(),  min(rect.y(), dr.bottom() + 1 - rect.height()))
+        return QRect(x, y, rect.width(), rect.height())
 
     def mouseMoveEvent(self, event):
         pos = event.position().toPoint()
 
         if self.mode == 'drawing':
-            self.end = pos
+            self.end = self._clamp_to_image(pos)
             self.update()
 
         elif self.mode == 'moving' and self.selected_index >= 0:
-            new_wrect = self.drag_original_rect.translated(pos - self.drag_start)
+            new_wrect = self._clamp_rect_to_image(
+                self.drag_original_rect.translated(pos - self.drag_start))
             self.shapes[self.selected_index] = self._wrect_to_yolo(new_wrect)
             self.update()
 
         elif self.mode == 'resizing' and self.selected_index >= 0:
-            new_wrect = apply_handle_drag(self.drag_original_rect, self.active_handle, pos - self.drag_start)
+            clamped_pos = self._clamp_to_image(pos)
+            new_wrect = self._clamp_rect_to_image(
+                apply_handle_drag(self.drag_original_rect, self.active_handle, clamped_pos - self.drag_start))
             self.shapes[self.selected_index] = self._wrect_to_yolo(new_wrect)
             self.update()
 
@@ -258,6 +286,9 @@ class Canvas(QLabel):
     # ── Cursor ───────────────────────────────────────────────────────────────
 
     def _update_cursor(self, pos):
+        if self.draw_mode:
+            self.setCursor(QCursor(Qt.CursorShape.CrossCursor))
+            return
         if self.selected_index >= len(self.shapes):
             self.selected_index = -1
         if self.selected_index >= 0:
@@ -274,40 +305,39 @@ class Canvas(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        painter = QPainter(self)
+        with QPainter(self) as painter:
+            for i, shape in enumerate(self.shapes):
+                rect = self._yolo_to_wrect(*shape)
+                cls_color = _class_color(self.shape_classes[i])
 
-        for i, shape in enumerate(self.shapes):
-            rect = self._yolo_to_wrect(*shape)
-            cls_color = _class_color(self.shape_classes[i])
+                if i == self.selected_index:
+                    # Selected box: class-color border + yellow handles
+                    painter.setPen(QPen(cls_color, 2))
+                    painter.drawRect(rect)
+                    painter.setBrush(QBrush(SELECTED_COLOR))
+                    painter.setPen(QPen(QColor(0, 0, 0), 1))
+                    for hr in handle_rects(rect):
+                        painter.drawRect(hr)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                else:
+                    painter.setPen(QPen(cls_color, 2))
+                    painter.drawRect(rect)
 
-            if i == self.selected_index:
-                # Selected box: class-color border + yellow handles
-                painter.setPen(QPen(cls_color, 2))
-                painter.drawRect(rect)
-                painter.setBrush(QBrush(SELECTED_COLOR))
-                painter.setPen(QPen(QColor(0, 0, 0), 1))
-                for hr in handle_rects(rect):
-                    painter.drawRect(hr)
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-            else:
-                painter.setPen(QPen(cls_color, 2))
-                painter.drawRect(rect)
+                # Class label text (top-left corner, black outline + white fill)
+                cls_idx = self.shape_classes[i]
+                if 0 <= cls_idx < len(self.class_names):
+                    text = self.class_names[cls_idx]
+                    tx = rect.left() + 3
+                    ty = rect.top() + 13
+                    painter.setPen(QPen(QColor(0, 0, 0)))
+                    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                        painter.drawText(tx + dx, ty + dy, text)
+                    painter.setPen(QPen(QColor(255, 255, 255)))
+                    painter.drawText(tx, ty, text)
 
-            # Class label text (top-left corner, black outline + white fill)
-            cls_idx = self.shape_classes[i]
-            if 0 <= cls_idx < len(self.class_names):
-                text = self.class_names[cls_idx]
-                tx = rect.left() + 3
-                ty = rect.top() + 13
-                painter.setPen(QPen(QColor(0, 0, 0)))
-                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
-                    painter.drawText(tx + dx, ty + dy, text)
-                painter.setPen(QPen(QColor(255, 255, 255)))
-                painter.drawText(tx, ty, text)
-
-        if self.mode == 'drawing':
-            painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
-            painter.drawRect(QRect(self.begin, self.end).normalized())
+            if self.mode == 'drawing':
+                painter.setPen(QPen(QColor(255, 0, 0), 2, Qt.PenStyle.DashLine))
+                painter.drawRect(QRect(self.begin, self.end).normalized())
 
 
 class Ui_MainWindow(object):
@@ -345,6 +375,10 @@ class Ui_MainWindow(object):
             "background-color: #2e7d32; color: white; font-weight: bold; border-radius: 4px;"
         )
 
+        self.btn_draw_mode = QPushButton("✏️ Draw  [W]")
+        self.btn_draw_mode.setFixedHeight(36)
+        self.btn_draw_mode.setToolTip("Toggle draw mode (W) — always draws new boxes, never selects")
+
         self.btn_check_mode = QPushButton("🔍 Check Mode")
         self.btn_check_mode.setFixedHeight(36)
         self.btn_check_mode.setCheckable(True)
@@ -381,6 +415,8 @@ class Ui_MainWindow(object):
         self.left_bar.addWidget(self.btn_export_dataset)
         self.left_bar.addSpacing(4)
         self.left_bar.addWidget(self.btn_auto_annotate)
+        self.left_bar.addSpacing(4)
+        self.left_bar.addWidget(self.btn_draw_mode)
         self.left_bar.addSpacing(4)
         self.left_bar.addWidget(self.btn_check_mode)
         self.left_bar.addStretch()

@@ -37,6 +37,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_save_dir.clicked.connect(self.select_save_dir)
         self.ui.btn_export_dataset.clicked.connect(self.export_dataset)
         self.ui.btn_auto_annotate.clicked.connect(self.auto_annotate)
+        self.ui.btn_draw_mode.clicked.connect(self._toggle_draw_mode)
         self.ui.btn_check_mode.toggled.connect(self.toggle_check_mode)
         self.ui.file_list.itemClicked.connect(self.load_image)
         self.ui.check_class_list.itemClicked.connect(self.on_check_class_selected)
@@ -68,7 +69,22 @@ class SimpleLabeler(QMainWindow):
                 if key == self._nav_next:
                     self._switch_image(1)
                     return True
+                if key == Qt.Key.Key_W:
+                    self._toggle_draw_mode()
+                    return True
         return super().eventFilter(obj, event)
+
+    def _toggle_draw_mode(self):
+        canvas = self.ui.canvas
+        canvas.draw_mode = not canvas.draw_mode
+        if canvas.draw_mode:
+            self.ui.btn_draw_mode.setText("✏️ Draw  [W]")
+            self.ui.btn_draw_mode.setStyleSheet(
+                "background-color: #2980b9; color: white; font-weight: bold;")
+        else:
+            self.ui.btn_draw_mode.setText("✏️ Draw  [W]")
+            self.ui.btn_draw_mode.setStyleSheet("")
+        canvas._update_cursor(canvas.mapFromGlobal(canvas.cursor().pos()))
 
     # ── Session persistence ───────────────────────────────────────────────────
 
@@ -81,6 +97,7 @@ class SimpleLabeler(QMainWindow):
         if save_dir and os.path.isdir(save_dir):
             self.save_dir = save_dir
             self.ui.lbl_save_path.setText(save_dir)
+            self._load_classes()
 
     def _save_session(self):
         cfg = config.load()
@@ -122,6 +139,14 @@ class SimpleLabeler(QMainWindow):
             self.ui.lbl_save_path.setText(path)
             self._load_classes()
             self._save_session()
+            # Reload labels for the currently displayed image
+            if self.current_img_name and self.ui.canvas.original_size:
+                txt_path = self._txt_path_for(self.current_img_name)
+                shapes, shape_classes = io_labels.load_yolo(txt_path)
+                self.ui.canvas.shapes        = shapes
+                self.ui.canvas.shape_classes = shape_classes
+                self.ui.canvas.update()
+                self._refresh_shape_list()
 
     def load_image(self, item):
         """Switch image: autosave current, load new image, restore existing labels."""
@@ -228,7 +253,7 @@ class SimpleLabeler(QMainWindow):
         if count == 0:
             return
         current = self.ui.file_list.currentRow()
-        new_row = (max(current, 0) + delta) % count
+        new_row = max(0, min(max(current, 0) + delta, count - 1))
         self.ui.file_list.setCurrentRow(new_row)
         self.load_image(self.ui.file_list.currentItem())
 
@@ -309,8 +334,22 @@ class SimpleLabeler(QMainWindow):
 
     # ── Check mode ───────────────────────────────────────────────────────────
 
+    def _require_image_dir(self) -> bool:
+        """Return True if image_dir is set and still exists; show a warning otherwise."""
+        if not self.image_dir or not os.path.isdir(self.image_dir):
+            self.image_dir = ""
+            self.ui.lbl_img_path.setText("(not set)")
+            QMessageBox.warning(self, "Image Directory Not Found",
+                                "The image directory no longer exists.\n"
+                                "Please select a new image directory.")
+            return False
+        return True
+
     def toggle_check_mode(self, checked: bool):
         if checked:
+            if not self._require_image_dir():
+                self.ui.btn_check_mode.setChecked(False)
+                return
             self.ui.btn_check_mode.setText("✏️  Label Mode")
             self.ui.center_stack.setCurrentIndex(1)
             self.ui.bottom_left_stack.setCurrentIndex(1)
@@ -386,9 +425,7 @@ class SimpleLabeler(QMainWindow):
     # ── Auto annotate ─────────────────────────────────────────────────────────
 
     def auto_annotate(self):
-        if not self.image_dir:
-            QMessageBox.warning(self, "No Image Directory",
-                                "Please select an image directory first.")
+        if not self._require_image_dir():
             return
         if not self.save_dir:
             QMessageBox.warning(self, "No Label Directory",
@@ -420,17 +457,21 @@ class SimpleLabeler(QMainWindow):
             return
 
         img_exts = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
-        images = [f for f in os.listdir(self.image_dir)
-                  if os.path.splitext(f)[1].lower() in img_exts]
-        if not images:
+        all_images = sorted([f for f in os.listdir(self.image_dir)
+                             if os.path.splitext(f)[1].lower() in img_exts])
+        if not all_images:
             QMessageBox.information(self, "No Images",
                                     "No images found in the image directory.")
             return
 
         self._autosave_yolo()
 
-        # Progress dialog — disable auto-close so it doesn't fire canceled when done
-        progress = QProgressDialog("Loading model…", "Cancel", 0, len(images), self)
+        total      = len(all_images)
+        batch_size = config.load().get("annotate_batch_size", 400)
+        batches    = [all_images[i:i+batch_size] for i in range(0, total, batch_size)]
+
+        # Progress dialog
+        progress = QProgressDialog("Loading model…", "Cancel", 0, total, self)
         progress.setWindowTitle("Auto Annotate")
         progress.setWindowModality(Qt.WindowModality.WindowModal)
         progress.setMinimumWidth(400)
@@ -439,27 +480,74 @@ class SimpleLabeler(QMainWindow):
         progress.setValue(0)
         progress.show()
 
-        # Worker + thread
-        worker = AnnotateWorker(model_path, conf, images, self.image_dir, self.save_dir)
-        thread = QThread(self)
-        worker.moveToThread(thread)
+        import time as _time
+        _start = _time.time()
+        _state = [0, total, "Loading model…"]   # [cur, total, fname] — written by QThread
+        _all_errors = []
+        _batch_idx  = [0]
+        _cancelled  = [False]
 
-        worker.progress.connect(lambda cur, total, fname: (
-            progress.setValue(cur),
-            progress.setLabelText(f"[{cur}/{total}] {fname}"),
-        ))
-        progress.canceled.connect(worker.cancel)
+        poll_timer = QTimer(self)
+        poll_timer.setInterval(500)
+        def _tick():
+            cur, tot, fname = _state
+            secs = int(_time.time() - _start)
+            m, s = divmod(secs, 60)
+            progress.setValue(cur)
+            progress.setLabelText(
+                f"[Batch {_batch_idx[0]}/{len(batches)}] [{cur}/{tot}] {fname}  ({m:02d}:{s:02d})")
+        poll_timer.timeout.connect(_tick)
+        poll_timer.start()
 
-        def on_finished(errors):
-            # Thread is still running — switch button to Finish, don't close yet
-            progress.canceled.disconnect(worker.cancel)
-            progress.setLabelText(f"Done — {len(images)} image(s) annotated.")
+        def _start_batch():
+            idx = _batch_idx[0]
+            offset = idx * batch_size
+            worker = AnnotateWorker(
+                model_path, conf,
+                batches[idx], self.image_dir, self.save_dir,
+                offset=offset, total=total,
+                write_classes=(idx == 0),
+            )
+            worker.set_state(_state)
+            thread = QThread(self)
+            worker.moveToThread(thread)
+
+            def _cancel_batch():
+                worker._cancel = True
+                _cancelled[0]  = True
+            progress.canceled.connect(_cancel_batch)
+
+            def on_batch_done(errors):
+                _all_errors.extend(errors)
+                thread.quit()
+                thread.wait()        # safe: main thread waits for QThread to stop
+                _batch_idx[0] += 1
+                if not _cancelled[0] and _batch_idx[0] < len(batches):
+                    _start_batch()
+                else:
+                    _finish()
+
+            # QueuedConnection ensures on_batch_done runs in the main thread,
+            # not inside the QThread that emitted finished
+            worker.finished.connect(on_batch_done, Qt.ConnectionType.QueuedConnection)
+            thread.started.connect(worker.run)
+            thread.start()
+            self._annotate_thread = thread
+            self._annotate_worker = worker
+
+        def _finish():
+            poll_timer.stop()
+            _state[0] = total
+            _tick()
+            try:
+                progress.canceled.disconnect()
+            except RuntimeError:
+                pass
+            progress.setLabelText(f"Done — {total} image(s) annotated.")
             progress.setCancelButtonText("Finish")
 
             def on_finish_clicked():
                 progress.close()
-                thread.quit()
-
                 try:
                     self._load_classes()
                     if self.current_img_name:
@@ -470,26 +558,16 @@ class SimpleLabeler(QMainWindow):
                         self.ui.canvas.update()
                         self._refresh_shape_list()
                 except Exception as e:
-                    QMessageBox.critical(self, "Auto Annotate — Post-process Error", str(e))
+                    QMessageBox.critical(self, "Post-process Error", str(e))
                     return
-
-                if errors:
+                if _all_errors:
                     QMessageBox.warning(self, "Auto Annotate — Some Errors",
-                                        f"Completed with {len(errors)} error(s):\n\n" +
-                                        "\n".join(errors[:10]))
+                                        f"Completed with {len(_all_errors)} error(s):\n\n" +
+                                        "\n".join(_all_errors[:10]))
 
             progress.canceled.connect(on_finish_clicked)
 
-        # Wire lifecycle: thread done → schedule deletion
-        worker.finished.connect(on_finished)
-        thread.finished.connect(thread.deleteLater)
-        thread.finished.connect(worker.deleteLater)
-        thread.started.connect(worker.run)
-        thread.start()
-
-        # Keep references alive until thread.deleteLater fires
-        self._annotate_thread = thread
-        self._annotate_worker = worker
+        _start_batch()
 
     # ── Dataset export ────────────────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 """Dialog and background worker for auto-annotation using an Ultralytics YOLO model."""
 
-import os
+import os, gc
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QFileDialog, QFrame,
@@ -11,55 +11,89 @@ from PySide6.QtCore import Qt, QObject, QThread, Signal
 # ── Background worker ──────────────────────────────────────────────────────────
 
 class AnnotateWorker(QObject):
-    """Runs YOLO inference on all images in a background thread."""
+    """Processes a slice of images in a background thread.
 
-    progress = Signal(int, int, str)   # (current, total, filename)
-    finished = Signal(list)            # (errors,)
+    progress is reported by writing to _state (a shared list) instead of
+    emitting Qt signals, so QProgressDialog.setValue() is never called from
+    a cross-thread queued connection — avoiding the processEvents deadlock.
+    """
+
+    finished = Signal(list)   # (errors,)
 
     def __init__(self, model_path: str, conf: float,
-                 images: list, image_dir: str, save_dir: str):
+                 images: list, image_dir: str, save_dir: str,
+                 offset: int, total: int, write_classes: bool):
+        """
+        images       — the slice this worker handles
+        offset       — global index of images[0]
+        total        — grand total of all images (for display)
+        write_classes — whether to write classes.txt (only first batch)
+        """
         super().__init__()
-        self.model_path = model_path
-        self.conf       = conf
-        self.images     = images
-        self.image_dir  = image_dir
-        self.save_dir   = save_dir
-        self._cancel    = False
+        self.model_path    = model_path
+        self.conf          = conf
+        self.images        = images
+        self.image_dir     = image_dir
+        self.save_dir      = save_dir
+        self.offset        = offset
+        self.total         = total
+        self.write_classes = write_classes
+        self._cancel       = False
+        self._state        = None   # [cur, total, fname] — set by main thread
+
+    def set_state(self, state: list):
+        self._state = state
 
     def cancel(self):
         self._cancel = True
 
     def run(self):
-        from ultralytics import YOLO
-        from .io_labels import save_yolo
+        import torch
+        torch.set_num_threads(1)
+        from PIL import Image as _PIL
+
+        errors     = []
+        update_every = max(1, self.total // 100)
 
         try:
+            from ultralytics import YOLO
             model = YOLO(self.model_path)
         except Exception as e:
-            self.finished.emit([f"Failed to load model: {e}"])
+            errors.append(f"Failed to load model: {e}")
+            self.finished.emit(errors)
             return
 
-        # Write classes.txt immediately after model load
-        class_names: dict = dict(model.names) if model.names else {}
-        if class_names:
-            try:
-                max_idx = max(int(k) for k in class_names)
-                lines   = [str(class_names.get(i, f"class{i}")) for i in range(max_idx + 1)]
-                with open(os.path.join(self.save_dir, "classes.txt"), "w", encoding="utf-8") as f:
-                    f.write("\n".join(lines))
-            except Exception:
-                pass  # Non-fatal; main window will still reload from file
+        if self.write_classes:
+            class_names = dict(model.names) if model.names else {}
+            if class_names:
+                try:
+                    max_idx = max(int(k) for k in class_names)
+                    lines   = [str(class_names.get(i, f"class{i}")) for i in range(max_idx + 1)]
+                    with open(os.path.join(self.save_dir, "classes.txt"), "w", encoding="utf-8") as f:
+                        f.write("\n".join(lines))
+                except Exception:
+                    pass
 
-        errors: list = []
-        total = len(self.images)
-
-        for i, fname in enumerate(self.images):
+        for local_i, fname in enumerate(self.images):
             if self._cancel:
                 break
-            self.progress.emit(i, total, fname)
+
+            global_i = self.offset + local_i
+            if self._state is not None and (local_i % update_every == 0 or local_i == len(self.images) - 1):
+                self._state[0] = global_i
+                self._state[2] = fname
+
             img_path = os.path.join(self.image_dir, fname)
+
             try:
-                results = model(img_path, conf=self.conf, verbose=False)
+                with _PIL.open(img_path) as _im:
+                    _im.convert("RGB")
+            except Exception as e:
+                errors.append(f"{fname}: PIL error — {e}")
+                continue
+
+            try:
+                results = model.predict(img_path, conf=self.conf, verbose=False)
                 result  = results[0]
                 shapes, shape_classes = [], []
                 if result.boxes is not None:
@@ -69,18 +103,29 @@ class AnnotateWorker(QObject):
                         if nw > 0 and nh > 0:
                             shapes.append((cx, cy, nw, nh))
                             shape_classes.append(cls_idx)
-                txt_path = os.path.join(
-                    self.save_dir, os.path.splitext(fname)[0] + ".txt"
-                )
+
+                txt_path = os.path.join(self.save_dir, os.path.splitext(fname)[0] + ".txt")
                 if shapes:
-                    save_yolo(txt_path, shapes, shape_classes)
+                    _write_yolo(txt_path, shapes, shape_classes)
                 elif os.path.exists(txt_path):
                     os.remove(txt_path)
+
+                del results, result, shapes, shape_classes
             except Exception as e:
                 errors.append(f"{fname}: {e}")
 
-        self.progress.emit(total, total, "")
+            if local_i % 100 == 99:
+                gc.collect()
+
         self.finished.emit(errors)
+
+
+def _write_yolo(path, shapes, shape_classes):
+    lines = []
+    for (cx, cy, nw, nh), cls_idx in zip(shapes, shape_classes):
+        lines.append(f"{max(0, cls_idx)} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
 
 
 # ── Settings dialog ────────────────────────────────────────────────────────────
@@ -95,7 +140,6 @@ class AutoAnnotateDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
-        # Model picker
         layout.addWidget(QLabel("YOLO model (.pt):"))
         row_model = QHBoxLayout()
         self.lbl_model = QLabel("No model selected")
@@ -108,7 +152,6 @@ class AutoAnnotateDialog(QDialog):
         row_model.addWidget(self.btn_browse)
         layout.addLayout(row_model)
 
-        # Confidence threshold
         row_conf = QHBoxLayout()
         row_conf.addWidget(QLabel("Confidence threshold:"))
         self.spin_conf = QDoubleSpinBox()
@@ -118,10 +161,10 @@ class AutoAnnotateDialog(QDialog):
         self.spin_conf.setDecimals(2)
         self.spin_conf.setFixedWidth(80)
         row_conf.addWidget(self.spin_conf)
+
         row_conf.addStretch()
         layout.addLayout(row_conf)
 
-        # Warning
         sep = QFrame()
         sep.setFrameShape(QFrame.Shape.HLine)
         sep.setStyleSheet("color: #555;")
@@ -135,7 +178,6 @@ class AutoAnnotateDialog(QDialog):
         warn.setWordWrap(True)
         layout.addWidget(warn)
 
-        # Buttons
         row_btns = QHBoxLayout()
         row_btns.addStretch()
         self.btn_ok = QPushButton("Run Auto Annotate")
