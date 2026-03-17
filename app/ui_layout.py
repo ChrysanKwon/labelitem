@@ -72,8 +72,9 @@ def apply_handle_drag(original, handle, delta):
 
 
 class Canvas(QLabel):
-    rectangle_drawn = Signal(QRect)
-    shape_modified  = Signal(int, QRect)
+    rectangle_drawn  = Signal(QRect)
+    shape_modified   = Signal(int, QRect)
+    selection_changed = Signal(int)   # emits selected_index (-1 = deselected)
 
     def __init__(self):
         super().__init__()
@@ -101,6 +102,36 @@ class Canvas(QLabel):
         self.begin = QPoint()
         self.end   = QPoint()
 
+        self._history    = []   # list of (shapes, shape_classes) snapshots for undo
+        self._redo_stack = []
+
+    # ── Undo / Redo ──────────────────────────────────────────────────────────
+
+    def save_snapshot(self):
+        """Save current shapes state before a mutating operation."""
+        self._history.append((list(self.shapes), list(self.shape_classes)))
+        self._redo_stack.clear()
+        if len(self._history) > 50:
+            self._history.pop(0)
+
+    def undo(self) -> bool:
+        if not self._history:
+            return False
+        self._redo_stack.append((list(self.shapes), list(self.shape_classes)))
+        self.shapes, self.shape_classes = self._history.pop()
+        self.selected_index = -1
+        self.update()
+        return True
+
+    def redo(self) -> bool:
+        if not self._redo_stack:
+            return False
+        self._history.append((list(self.shapes), list(self.shape_classes)))
+        self.shapes, self.shape_classes = self._redo_stack.pop()
+        self.selected_index = -1
+        self.update()
+        return True
+
     def set_image(self, pixmap):
         self.current_pixmap = pixmap
         self.original_size  = pixmap.size()
@@ -108,11 +139,21 @@ class Canvas(QLabel):
         self.shape_classes  = []
         self.selected_index = -1
         self.mode           = 'idle'
-        self.setPixmap(self.current_pixmap.scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        ))
+        self._history.clear()
+        self._redo_stack.clear()
+        self._rescale_pixmap()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._rescale_pixmap()
+
+    def _rescale_pixmap(self):
+        if self.current_pixmap:
+            self.setPixmap(self.current_pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
 
     def get_display_rect(self) -> QRect:
         """Return the QRect where the image is actually rendered (KeepAspectRatio + AlignCenter)."""
@@ -204,6 +245,7 @@ class Canvas(QLabel):
             _wrect = self._yolo_to_wrect(*self.shapes[self.selected_index])
             h = self._handle_at(pos, _wrect)
             if h >= 0:
+                self.save_snapshot()
                 self.mode               = 'resizing'
                 self.active_handle      = h
                 self.drag_start         = pos
@@ -212,15 +254,18 @@ class Canvas(QLabel):
 
         idx = self._box_at(pos)
         if idx >= 0:
+            self.save_snapshot()
             self.selected_index     = idx
             self.mode               = 'moving'
             self.drag_start         = pos
             self.drag_original_rect = self._yolo_to_wrect(*self.shapes[idx])
+            self.selection_changed.emit(idx)
             self.update()
             return
 
         # Normal mode, clicked on empty space → do nothing (no accidental drawing)
         self.selected_index = -1
+        self.selection_changed.emit(-1)
         self.update()
 
     def _clamp_to_image(self, pos: QPoint) -> QPoint:
@@ -271,6 +316,7 @@ class Canvas(QLabel):
         if self.mode == 'drawing':
             new_rect = QRect(self.begin, self.end).normalized()
             if new_rect.width() > 5 and new_rect.height() > 5:
+                self.save_snapshot()
                 self.shapes.append(self._wrect_to_yolo(new_rect))
                 self.shape_classes.append(-1)          # unassigned; main.py will update it
                 self.selected_index = len(self.shapes) - 1
@@ -395,6 +441,11 @@ class Ui_MainWindow(object):
         files_layout.addWidget(QLabel("File List:"))
         self.file_list = QListWidget()
         files_layout.addWidget(self.file_list)
+        self.btn_delete_image = QPushButton("🗑  Delete Image & Label")
+        self.btn_delete_image.setFixedHeight(28)
+        self.btn_delete_image.setStyleSheet(
+            "background-color: #b71c1c; color: white; border-radius: 3px;")
+        files_layout.addWidget(self.btn_delete_image)
 
         page_check = QWidget()
         check_layout = QVBoxLayout(page_check)
@@ -427,8 +478,8 @@ class Ui_MainWindow(object):
 
         self.check_view = QListWidget()
         self.check_view.setViewMode(QListWidget.ViewMode.IconMode)
-        self.check_view.setIconSize(QSize(160, 120))
-        self.check_view.setGridSize(QSize(176, 148))
+        self.check_view.setIconSize(QSize(176, 130))
+        self.check_view.setGridSize(QSize(186, 144))
         self.check_view.setResizeMode(QListWidget.ResizeMode.Adjust)
         self.check_view.setMovement(QListWidget.Movement.Static)
         self.check_view.setSpacing(6)

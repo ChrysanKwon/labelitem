@@ -1,6 +1,7 @@
 """Dialog and background worker for auto-annotation using an Ultralytics YOLO model."""
 
 import os, gc
+from app import io_labels
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QFileDialog, QFrame,
@@ -60,7 +61,8 @@ class AnnotateWorker(QObject):
             model = YOLO(self.model_path)
         except Exception as e:
             errors.append(f"Failed to load model: {e}")
-            self.finished.emit(errors)
+            self._errors = errors
+            QThread.currentThread().quit()
             return
 
         if self.write_classes:
@@ -106,7 +108,7 @@ class AnnotateWorker(QObject):
 
                 txt_path = os.path.join(self.save_dir, os.path.splitext(fname)[0] + ".txt")
                 if shapes:
-                    _write_yolo(txt_path, shapes, shape_classes)
+                    io_labels.save_yolo(txt_path, shapes, shape_classes)
                 elif os.path.exists(txt_path):
                     os.remove(txt_path)
 
@@ -117,15 +119,8 @@ class AnnotateWorker(QObject):
             if local_i % 100 == 99:
                 gc.collect()
 
-        self.finished.emit(errors)
-
-
-def _write_yolo(path, shapes, shape_classes):
-    lines = []
-    for (cx, cy, nw, nh), cls_idx in zip(shapes, shape_classes):
-        lines.append(f"{max(0, cls_idx)} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines))
+        self._errors = errors
+        QThread.currentThread().quit()
 
 
 # ── Settings dialog ────────────────────────────────────────────────────────────

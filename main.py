@@ -1,15 +1,17 @@
 import sys
 import os
 from PySide6.QtWidgets import (QApplication, QMainWindow, QFileDialog,
-                               QListWidget, QListWidgetItem, QMessageBox,
+                               QListWidget, QMessageBox,
                                QLineEdit, QProgressDialog)
-from PySide6.QtGui import QPixmap, QBrush, QIcon
+from PySide6.QtGui import QPixmap, QBrush
 from PySide6.QtCore import Qt, QTimer, QEvent, QThread
 from app.ui_layout import Ui_MainWindow, CLASS_COLORS
 from app import config
 from app import io_labels
 from app.export_dialog import ExportDialog
 from app.auto_annotate_dialog import AutoAnnotateDialog, AnnotateWorker
+from app.check_mode import CheckModeController
+from app.utils import format_shape_label, apply_draw_mode
 
 
 class SimpleLabeler(QMainWindow):
@@ -22,6 +24,7 @@ class SimpleLabeler(QMainWindow):
         self.current_img_name = ""
         self._annotate_thread = None
         self._annotate_worker = None
+        self._check = CheckModeController(self)
 
         # Load key scheme from config ("arrows" or "ad")
         _nav = config.load().get("nav_keys", "arrows")
@@ -38,10 +41,11 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_export_dataset.clicked.connect(self.export_dataset)
         self.ui.btn_auto_annotate.clicked.connect(self.auto_annotate)
         self.ui.btn_draw_mode.clicked.connect(self._toggle_draw_mode)
-        self.ui.btn_check_mode.toggled.connect(self.toggle_check_mode)
+        self.ui.btn_delete_image.clicked.connect(self._delete_current_image)
+        self.ui.btn_check_mode.toggled.connect(self._on_check_mode_toggled)
         self.ui.file_list.itemClicked.connect(self.load_image)
-        self.ui.check_class_list.itemClicked.connect(self.on_check_class_selected)
-        self.ui.check_view.itemDoubleClicked.connect(self.on_check_item_double_clicked)
+        self.ui.check_class_list.itemClicked.connect(self._check.on_class_selected)
+        self.ui.check_view.itemDoubleClicked.connect(self._check.on_item_double_clicked)
         self.ui.canvas.rectangle_drawn.connect(lambda _: self.on_rectangle_drawn())
         self.ui.canvas.shape_modified.connect(lambda idx, _: self.on_shape_modified(idx))
         self.ui.shape_list.keyPressEvent = self.shape_list_key_press
@@ -72,19 +76,22 @@ class SimpleLabeler(QMainWindow):
                 if key == Qt.Key.Key_W:
                     self._toggle_draw_mode()
                     return True
+                mods = event.modifiers()
+                if key == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
+                    if mods & Qt.KeyboardModifier.ShiftModifier:
+                        self._redo()
+                    else:
+                        self._undo()
+                    return True
+                if key == Qt.Key.Key_Delete and mods & Qt.KeyboardModifier.ControlModifier:
+                    if not self.ui.btn_check_mode.isChecked():
+                        self._delete_current_image()
+                    return True
         return super().eventFilter(obj, event)
 
     def _toggle_draw_mode(self):
         canvas = self.ui.canvas
-        canvas.draw_mode = not canvas.draw_mode
-        if canvas.draw_mode:
-            self.ui.btn_draw_mode.setText("✏️ Draw  [W]")
-            self.ui.btn_draw_mode.setStyleSheet(
-                "background-color: #2980b9; color: white; font-weight: bold;")
-        else:
-            self.ui.btn_draw_mode.setText("✏️ Draw  [W]")
-            self.ui.btn_draw_mode.setStyleSheet("")
-        canvas._update_cursor(canvas.mapFromGlobal(canvas.cursor().pos()))
+        apply_draw_mode(canvas, self.ui.btn_draw_mode, not canvas.draw_mode)
 
     # ── Session persistence ───────────────────────────────────────────────────
 
@@ -192,17 +199,15 @@ class SimpleLabeler(QMainWindow):
         return self.ui.class_list.currentRow()
 
     def _shape_label(self, shape_idx):
-        cx, cy, nw, nh = self.ui.canvas.shapes[shape_idx]
-        cls_idx = self.ui.canvas.shape_classes[shape_idx]
-        cls_name = (self.ui.class_list.item(cls_idx).text()
-                    if 0 <= cls_idx < self.ui.class_list.count() else "unassigned")
-        if self.ui.canvas.original_size:
-            iw = self.ui.canvas.original_size.width()
-            ih = self.ui.canvas.original_size.height()
-            x = round((cx - nw / 2) * iw); y = round((cy - nh / 2) * ih)
-            w = round(nw * iw);             h = round(nh * ih)
-            return f"[{cls_name}] {x},{y} {w}×{h}"
-        return f"[{cls_name}] {cx:.3f},{cy:.3f}"
+        canvas = self.ui.canvas
+        class_names = [self.ui.class_list.item(i).text()
+                       for i in range(self.ui.class_list.count())]
+        return format_shape_label(
+            canvas.shapes[shape_idx],
+            canvas.shape_classes[shape_idx],
+            class_names,
+            canvas.original_size,
+        )
 
     def on_rectangle_drawn(self):
         cls_idx = self._current_class_idx()
@@ -221,7 +226,18 @@ class SimpleLabeler(QMainWindow):
         if item:
             item.setText(self._shape_label(index))
 
+    def _undo(self):
+        if self.ui.canvas.undo():
+            self._refresh_shape_list()
+            self._autosave_yolo()
+
+    def _redo(self):
+        if self.ui.canvas.redo():
+            self._refresh_shape_list()
+            self._autosave_yolo()
+
     def _delete_shape(self, row):
+        self.ui.canvas.save_snapshot()
         self.ui.shape_list.takeItem(row)
         self.ui.canvas.shapes.pop(row)
         self.ui.canvas.shape_classes.pop(row)
@@ -257,6 +273,53 @@ class SimpleLabeler(QMainWindow):
         self.ui.file_list.setCurrentRow(new_row)
         self.load_image(self.ui.file_list.currentItem())
 
+    def _delete_current_image(self):
+        """Delete the current image file and its label, with double confirmation."""
+        if not self.current_img_name or not self.image_dir:
+            return
+        fname = self.current_img_name
+        reply = QMessageBox.question(
+            self, "Delete Image?",
+            f"Delete image and label for:\n{fname}\n\nThis cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        reply2 = QMessageBox.warning(
+            self, "Confirm Permanent Delete",
+            f"Permanently delete  {fname}  and its label file?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply2 != QMessageBox.StandardButton.Yes:
+            return
+
+        current_row = self.ui.file_list.currentRow()
+        img_path = os.path.join(self.image_dir, fname)
+        txt_path = self._txt_path_for(fname)
+        try:
+            if os.path.exists(img_path):
+                os.remove(img_path)
+            if os.path.exists(txt_path):
+                os.remove(txt_path)
+        except OSError as e:
+            QMessageBox.critical(self, "Delete Failed", str(e))
+            return
+
+        self.current_img_name = ""
+        self.ui.canvas.shapes.clear()
+        self.ui.canvas.shape_classes.clear()
+        self.ui.file_list.takeItem(current_row)
+
+        if self.ui.file_list.count() > 0:
+            new_row = min(current_row, self.ui.file_list.count() - 1)
+            self.ui.file_list.setCurrentRow(new_row)
+            self.load_image(self.ui.file_list.currentItem())
+        else:
+            self.ui.canvas.set_image(QPixmap())
+            self.ui.shape_list.clear()
+
     # ── Class management ──────────────────────────────────────────────────────
 
     def add_class(self):
@@ -287,6 +350,7 @@ class SimpleLabeler(QMainWindow):
         cls_idx = self.ui.class_list.row(item)
         sel = self.ui.canvas.selected_index
         if sel >= 0:
+            self.ui.canvas.save_snapshot()
             self.ui.canvas.shape_classes[sel] = cls_idx
             self.ui.canvas.update()
             self._refresh_shape_list()
@@ -345,82 +409,14 @@ class SimpleLabeler(QMainWindow):
             return False
         return True
 
-    def toggle_check_mode(self, checked: bool):
+    def _on_check_mode_toggled(self, checked: bool):
         if checked:
             if not self._require_image_dir():
                 self.ui.btn_check_mode.setChecked(False)
                 return
-            self.ui.btn_check_mode.setText("✏️  Label Mode")
-            self.ui.center_stack.setCurrentIndex(1)
-            self.ui.bottom_left_stack.setCurrentIndex(1)
-            # Sync class list into check_class_list
-            self.ui.check_class_list.clear()
-            for i in range(self.ui.class_list.count()):
-                src = self.ui.class_list.item(i)
-                self.ui.check_class_list.addItem(src.text())
-                self.ui.check_class_list.item(i).setForeground(src.foreground())
-            # Auto-select first class and refresh
-            if self.ui.check_class_list.count() > 0:
-                self.ui.check_class_list.setCurrentRow(0)
-                self._refresh_check_view(0)
+            self._check.enter()
         else:
-            self.ui.btn_check_mode.setText("🔍 Check Mode")
-            self.ui.center_stack.setCurrentIndex(0)
-            self.ui.bottom_left_stack.setCurrentIndex(0)
-            self.ui.check_view.clear()
-
-    def on_check_class_selected(self, item):
-        self._refresh_check_view(self.ui.check_class_list.row(item))
-
-    def _refresh_check_view(self, cls_idx: int):
-        """Populate check_view with all cropped boxes of cls_idx across all images."""
-        self.ui.check_view.clear()
-        if not self.image_dir or not self.save_dir:
-            return
-
-        img_exts = {'.jpg', '.jpeg', '.png'}
-        for fname in sorted(os.listdir(self.image_dir)):
-            if os.path.splitext(fname)[1].lower() not in img_exts:
-                continue
-            txt_path = os.path.join(self.save_dir, os.path.splitext(fname)[0] + '.txt')
-            if not os.path.exists(txt_path):
-                continue
-
-            pixmap = QPixmap(os.path.join(self.image_dir, fname))
-            if pixmap.isNull():
-                continue
-            iw, ih = pixmap.width(), pixmap.height()
-
-            with open(txt_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    parts = line.strip().split()
-                    if len(parts) != 5 or int(parts[0]) != cls_idx:
-                        continue
-                    cx, cy, nw, nh = float(parts[1]), float(parts[2]), float(parts[3]), float(parts[4])
-                    x = max(0, int((cx - nw / 2) * iw))
-                    y = max(0, int((cy - nh / 2) * ih))
-                    w = min(int(nw * iw), iw - x)
-                    h = min(int(nh * ih), ih - y)
-                    if w < 1 or h < 1:
-                        continue
-                    crop = pixmap.copy(x, y, w, h)
-                    item = QListWidgetItem(QIcon(crop), fname)
-                    item.setData(Qt.ItemDataRole.UserRole, fname)
-                    self.ui.check_view.addItem(item)
-
-    def on_check_item_double_clicked(self, item):
-        """Switch to label mode and navigate to the image that was double-clicked."""
-        fname = item.data(Qt.ItemDataRole.UserRole)
-        if not fname:
-            return
-        # Exit check mode
-        self.ui.btn_check_mode.setChecked(False)
-        # Find and select the image in file_list
-        for i in range(self.ui.file_list.count()):
-            if self.ui.file_list.item(i).text() == fname:
-                self.ui.file_list.setCurrentRow(i)
-                self.load_image(self.ui.file_list.item(i))
-                break
+            self._check.exit()
 
     # ── Auto annotate ─────────────────────────────────────────────────────────
 
@@ -496,6 +492,23 @@ class SimpleLabeler(QMainWindow):
             progress.setValue(cur)
             progress.setLabelText(
                 f"[Batch {_batch_idx[0]}/{len(batches)}] [{cur}/{tot}] {fname}  ({m:02d}:{s:02d})")
+
+            # Detect batch completion entirely in the main thread — no cross-thread signals.
+            # PySide6 does not honour QueuedConnection for plain Python callables (no
+            # QObject affinity), so any slot connected to worker.finished would run in
+            # the QThread via DirectConnection, causing the timer/parent warnings.
+            t = self._annotate_thread
+            if t is not None and not t.isRunning():
+                self._annotate_thread = None
+                w = self._annotate_worker
+                if w is not None:
+                    _all_errors.extend(getattr(w, '_errors', []))
+                _batch_idx[0] += 1
+                if not _cancelled[0] and _batch_idx[0] < len(batches):
+                    _start_batch()
+                else:
+                    _finish()
+
         poll_timer.timeout.connect(_tick)
         poll_timer.start()
 
@@ -517,19 +530,7 @@ class SimpleLabeler(QMainWindow):
                 _cancelled[0]  = True
             progress.canceled.connect(_cancel_batch)
 
-            def on_batch_done(errors):
-                _all_errors.extend(errors)
-                thread.quit()
-                thread.wait()        # safe: main thread waits for QThread to stop
-                _batch_idx[0] += 1
-                if not _cancelled[0] and _batch_idx[0] < len(batches):
-                    _start_batch()
-                else:
-                    _finish()
-
-            # QueuedConnection ensures on_batch_done runs in the main thread,
-            # not inside the QThread that emitted finished
-            worker.finished.connect(on_batch_done, Qt.ConnectionType.QueuedConnection)
+            # No finished signal connection — _tick() polls isRunning() instead.
             thread.started.connect(worker.run)
             thread.start()
             self._annotate_thread = thread
