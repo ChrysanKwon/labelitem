@@ -30,11 +30,12 @@ class CheckEditDialog(QDialog):
     """
 
     def __init__(self, parent, image_path: str, txt_path: str, class_names: list[str],
-                 select_box: tuple | None = None):
+                 select_box=None, annotation_mode: str = 'detection'):
         super().__init__(parent)
-        self.txt_path      = txt_path
-        self.image_path    = image_path
-        self.class_names   = class_names
+        self.txt_path         = txt_path
+        self.image_path       = image_path
+        self.class_names      = class_names
+        self.annotation_mode  = annotation_mode
         self.delete_requested = False   # set True if user chose to delete image+label
 
         self.setWindowTitle(f"Edit — {image_path.split('/')[-1].split(chr(92))[-1]}")
@@ -47,17 +48,23 @@ class CheckEditDialog(QDialog):
         pixmap = QPixmap(image_path)
         self.canvas.set_image(pixmap)
 
-        shapes, shape_classes = io_labels.load_yolo(txt_path)
+        shapes, shape_classes = io_labels.load_yolo(txt_path, annotation_mode)
         self.canvas.shapes        = shapes
         self.canvas.shape_classes = shape_classes
 
-        # Pre-select the box that was double-clicked in check view
+        # Pre-select the shape that was double-clicked in check view
         if select_box is not None:
-            cx, cy, nw, nh = select_box
-            for i, (scx, scy, snw, snh) in enumerate(shapes):
-                if abs(scx - cx) < 1e-6 and abs(scy - cy) < 1e-6:
-                    self.canvas.selected_index = i
-                    break
+            for i, shape in enumerate(shapes):
+                if isinstance(select_box, list) and isinstance(shape, list):
+                    # polygon: compare first vertex
+                    if shape and select_box and abs(shape[0][0] - select_box[0][0]) < 1e-6:
+                        self.canvas.selected_index = i
+                        break
+                elif isinstance(select_box, tuple) and isinstance(shape, tuple):
+                    # bbox: compare cx, cy
+                    if abs(shape[0] - select_box[0]) < 1e-6 and abs(shape[1] - select_box[1]) < 1e-6:
+                        self.canvas.selected_index = i
+                        break
 
         self.canvas.update()
 
@@ -66,12 +73,12 @@ class CheckEditDialog(QDialog):
         right.setSpacing(6)
 
         # Shape list
-        right.addWidget(QLabel("Bounding Boxes:"))
+        right.addWidget(QLabel("Shapes:"))
         self.shape_list = QListWidget()
         self.shape_list.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         right.addWidget(self.shape_list, stretch=1)
 
-        btn_del_shape = QPushButton("Delete Selected Box  [Del]")
+        btn_del_shape = QPushButton("Delete Selected Shape  [Del]")
         btn_del_shape.setFixedHeight(30)
         btn_del_shape.clicked.connect(self._delete_selected_shape)
         right.addWidget(btn_del_shape)
@@ -93,8 +100,12 @@ class CheckEditDialog(QDialog):
 
         right.addSpacing(12)
 
-        # Draw mode toggle
-        self.btn_draw = QPushButton("✏️ Draw Mode  [W]")
+        # Draw mode toggle (label and behaviour depend on annotation mode)
+        if annotation_mode == 'segmentation':
+            draw_label = "🔷 Polygon Draw  [P]"
+        else:
+            draw_label = "✏️ Rect Draw  [W]"
+        self.btn_draw = QPushButton(draw_label)
         self.btn_draw.setCheckable(True)
         self.btn_draw.setFixedHeight(34)
         self.btn_draw.clicked.connect(self._toggle_draw_mode)
@@ -131,12 +142,14 @@ class CheckEditDialog(QDialog):
 
         # ── Signals ───────────────────────────────────────────────────────
         self.canvas.rectangle_drawn.connect(self._on_rectangle_drawn)
+        self.canvas.polygon_drawn.connect(self._on_polygon_drawn)
         self.canvas.shape_modified.connect(self._on_shape_modified)
         self.canvas.selection_changed.connect(self._on_canvas_selection_changed)
         self.class_list.itemClicked.connect(self._on_class_selected)
 
-        # Keyboard shortcuts
-        QShortcut(QKeySequence("W"), self).activated.connect(
+        # Keyboard shortcuts — key depends on mode
+        draw_key = "P" if annotation_mode == 'segmentation' else "W"
+        QShortcut(QKeySequence(draw_key), self).activated.connect(
             lambda: self.btn_draw.setChecked(not self.btn_draw.isChecked()) or self._toggle_draw_mode())
         QShortcut(QKeySequence(Qt.Key.Key_Delete), self).activated.connect(self._delete_selected_shape)
         QShortcut(QKeySequence(Qt.Key.Key_Backspace), self).activated.connect(self._delete_selected_shape)
@@ -173,7 +186,8 @@ class CheckEditDialog(QDialog):
     # ── Slots ─────────────────────────────────────────────────────────────
 
     def _toggle_draw_mode(self):
-        apply_draw_mode(self.canvas, self.btn_draw, self.btn_draw.isChecked())
+        apply_draw_mode(self.canvas, self.btn_draw, self.btn_draw.isChecked(),
+                        polygon=(self.annotation_mode == 'segmentation'))
 
     def _on_rectangle_drawn(self, _rect):
         cls_idx = self._current_class_idx()
@@ -181,6 +195,12 @@ class CheckEditDialog(QDialog):
         self.canvas.shape_classes[last] = cls_idx
         self.canvas.update()
         self.shape_list.addItem(self._shape_label(last))
+
+    def _on_polygon_drawn(self, index: int):
+        cls_idx = self._current_class_idx()
+        self.canvas.shape_classes[index] = cls_idx
+        self.canvas.update()
+        self.shape_list.addItem(self._shape_label(index))
 
     def _undo(self):
         if self.canvas.undo():

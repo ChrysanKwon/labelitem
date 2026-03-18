@@ -4,7 +4,7 @@ import os, gc
 from app import io_labels
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QDoubleSpinBox, QFileDialog, QFrame,
+    QDoubleSpinBox, QFileDialog, QFrame, QButtonGroup,
 )
 from PySide6.QtCore import Qt, QObject, QThread, Signal
 
@@ -23,24 +23,27 @@ class AnnotateWorker(QObject):
 
     def __init__(self, model_path: str, conf: float,
                  images: list, image_dir: str, save_dir: str,
-                 offset: int, total: int, write_classes: bool):
+                 offset: int, total: int, write_classes: bool,
+                 annotation_mode: str = 'detection'):
         """
-        images       — the slice this worker handles
-        offset       — global index of images[0]
-        total        — grand total of all images (for display)
-        write_classes — whether to write classes.txt (only first batch)
+        images          — the slice this worker handles
+        offset          — global index of images[0]
+        total           — grand total of all images (for display)
+        write_classes   — whether to write classes.txt (only first batch)
+        annotation_mode — 'detection' or 'segmentation'
         """
         super().__init__()
-        self.model_path    = model_path
-        self.conf          = conf
-        self.images        = images
-        self.image_dir     = image_dir
-        self.save_dir      = save_dir
-        self.offset        = offset
-        self.total         = total
-        self.write_classes = write_classes
-        self._cancel       = False
-        self._state        = None   # [cur, total, fname] — set by main thread
+        self.model_path      = model_path
+        self.conf            = conf
+        self.images          = images
+        self.image_dir       = image_dir
+        self.save_dir        = save_dir
+        self.offset          = offset
+        self.total           = total
+        self.write_classes   = write_classes
+        self.annotation_mode = annotation_mode
+        self._cancel         = False
+        self._state          = None   # [cur, total, fname] — set by main thread
 
     def set_state(self, state: list):
         self._state = state
@@ -98,7 +101,15 @@ class AnnotateWorker(QObject):
                 results = model.predict(img_path, conf=self.conf, verbose=False)
                 result  = results[0]
                 shapes, shape_classes = [], []
-                if result.boxes is not None:
+
+                if self.annotation_mode == 'segmentation' and result.masks is not None:
+                    for i, mask in enumerate(result.masks):
+                        cls_idx = int(result.boxes.cls[i].item())
+                        pts = [(float(x), float(y)) for x, y in mask.xyn[0]]
+                        if len(pts) >= 3:
+                            shapes.append(pts)
+                            shape_classes.append(cls_idx)
+                elif result.boxes is not None:
                     for box in result.boxes:
                         cls_idx = int(box.cls[0].item())
                         cx, cy, nw, nh = box.xywhn[0].tolist()
@@ -126,7 +137,7 @@ class AnnotateWorker(QObject):
 # ── Settings dialog ────────────────────────────────────────────────────────────
 
 class AutoAnnotateDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, annotation_mode: str = 'detection'):
         super().__init__(parent)
         self.setWindowTitle("Auto Annotate")
         self.setMinimumWidth(440)
@@ -146,6 +157,33 @@ class AutoAnnotateDialog(QDialog):
         row_model.addWidget(self.lbl_model, stretch=1)
         row_model.addWidget(self.btn_browse)
         layout.addLayout(row_model)
+
+        # Output format
+        layout.addWidget(QLabel("Output format:"))
+        _btn_style = (
+            "QPushButton { border:1px solid #555; border-radius:4px; color:#ccc;"
+            " padding:4px 14px; background:#2d2d2d; }"
+            "QPushButton:checked { background:#1565c0; color:white; font-weight:bold; border-color:#1565c0; }"
+            "QPushButton:hover:!checked { background:#3a3a3a; }"
+        )
+        self.btn_fmt_det = QPushButton("⬛ Detection (bbox)")
+        self.btn_fmt_seg = QPushButton("🔷 Segmentation (polygon)")
+        for btn in (self.btn_fmt_det, self.btn_fmt_seg):
+            btn.setCheckable(True)
+            btn.setFixedHeight(30)
+            btn.setStyleSheet(_btn_style)
+        self._fmt_group = QButtonGroup(self)
+        self._fmt_group.setExclusive(True)
+        self._fmt_group.addButton(self.btn_fmt_det, 0)
+        self._fmt_group.addButton(self.btn_fmt_seg, 1)
+        if annotation_mode == 'segmentation':
+            self.btn_fmt_seg.setChecked(True)
+        else:
+            self.btn_fmt_det.setChecked(True)
+        row_fmt = QHBoxLayout()
+        row_fmt.addWidget(self.btn_fmt_det)
+        row_fmt.addWidget(self.btn_fmt_seg)
+        layout.addLayout(row_fmt)
 
         row_conf = QHBoxLayout()
         row_conf.addWidget(QLabel("Confidence threshold:"))
@@ -199,3 +237,6 @@ class AutoAnnotateDialog(QDialog):
 
     def conf(self) -> float:
         return self.spin_conf.value()
+
+    def annotation_mode(self) -> str:
+        return 'segmentation' if self.btn_fmt_seg.isChecked() else 'detection'

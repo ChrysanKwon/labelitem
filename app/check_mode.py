@@ -39,7 +39,6 @@ class CheckModeController:
 
     def enter(self):
         """Switch UI to Check Mode and populate the class list."""
-        self._ui.btn_check_mode.setText("✏️  Label Mode")
         self._ui.center_stack.setCurrentIndex(1)
         self._ui.bottom_left_stack.setCurrentIndex(1)
 
@@ -56,10 +55,7 @@ class CheckModeController:
             self.refresh_view(0)
 
     def exit(self):
-        """Switch UI back to Label Mode."""
-        self._ui.btn_check_mode.setText("🔍 Check Mode")
-        self._ui.center_stack.setCurrentIndex(0)
-        self._ui.bottom_left_stack.setCurrentIndex(0)
+        """Clear check view (nav column controls actual stack switching)."""
         self._ui.check_view.clear()
 
     def on_class_selected(self, item):
@@ -76,7 +72,8 @@ class CheckModeController:
                        for i in range(self._ui.class_list.count())]
         box_coords  = item.data(Qt.ItemDataRole.UserRole + 1)
         dlg = CheckEditDialog(self._mw, image_path, txt_path,
-                              class_names, select_box=box_coords)
+                              class_names, select_box=box_coords,
+                              annotation_mode=self._annotation_mode)
         dlg.exec()
 
         if dlg.delete_requested:
@@ -100,11 +97,16 @@ class CheckModeController:
 
     # ── Private helpers ───────────────────────────────────────────────────
 
+    @property
+    def _annotation_mode(self) -> str:
+        return getattr(self._mw, 'annotation_mode', 'detection')
+
     def _count_labels_by_class(self) -> dict:
-        """Return {class_idx: count} across all label files in save_dir."""
+        """Return {class_idx: count} across all label files in save_dir, filtered by annotation mode."""
         counts = {}
         if not self._save_dir or not os.path.isdir(self._save_dir):
             return counts
+        mode = self._annotation_mode
         for fname in os.listdir(self._save_dir):
             if not fname.endswith('.txt') or fname == 'classes.txt':
                 continue
@@ -113,9 +115,10 @@ class CheckModeController:
                           'r', encoding='utf-8') as f:
                     for line in f:
                         parts = line.strip().split()
-                        if len(parts) == 5:
-                            cls = int(parts[0])
-                            counts[cls] = counts.get(cls, 0) + 1
+                        if mode == 'detection' and len(parts) == 5:
+                            counts[int(parts[0])] = counts.get(int(parts[0]), 0) + 1
+                        elif mode == 'segmentation' and len(parts) >= 7 and len(parts) % 2 == 1:
+                            counts[int(parts[0])] = counts.get(int(parts[0]), 0) + 1
             except (ValueError, OSError):
                 pass
         return counts
@@ -142,7 +145,7 @@ class CheckModeController:
         return thumb
 
     def _items_for(self, fname: str, cls_idx: int) -> list:
-        """Build QListWidgetItems for all boxes of cls_idx in fname."""
+        """Build QListWidgetItems for all shapes of cls_idx in fname."""
         txt_path = self._txt_path_for(fname)
         if not os.path.exists(txt_path):
             return []
@@ -150,30 +153,54 @@ class CheckModeController:
         if pixmap.isNull():
             return []
         iw, ih = pixmap.width(), pixmap.height()
+        mode = self._annotation_mode
         items = []
         with open(txt_path, 'r', encoding='utf-8') as f:
             for line in f:
                 parts = line.strip().split()
-                if len(parts) != 5 or int(parts[0]) != cls_idx:
+                if not parts or int(parts[0]) != cls_idx:
                     continue
-                cx, cy, nw, nh = (float(parts[1]), float(parts[2]),
-                                   float(parts[3]), float(parts[4]))
-                x = max(0, int((cx - nw / 2) * iw))
-                y = max(0, int((cy - nh / 2) * ih))
-                w = min(int(nw * iw), iw - x)
-                h = min(int(nh * ih), ih - y)
-                if w < 1 or h < 1:
+
+                if mode == 'detection' and len(parts) == 5:
+                    cx, cy, nw, nh = (float(parts[1]), float(parts[2]),
+                                       float(parts[3]), float(parts[4]))
+                    x = max(0, int((cx - nw / 2) * iw))
+                    y = max(0, int((cy - nh / 2) * ih))
+                    w = min(int(nw * iw), iw - x)
+                    h = min(int(nh * ih), ih - y)
+                    if w < 1 or h < 1:
+                        continue
+                    crop = pixmap.copy(x, y, w, h).scaled(
+                        QSize(160, 100),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    box_data = (cx, cy, nw, nh)
+
+                elif mode == 'segmentation' and len(parts) >= 7 and len(parts) % 2 == 1:
+                    xs = [float(parts[i]) for i in range(1, len(parts), 2)]
+                    ys = [float(parts[i]) for i in range(2, len(parts), 2)]
+                    x = max(0, int(min(xs) * iw))
+                    y = max(0, int(min(ys) * ih))
+                    w = min(int((max(xs) - min(xs)) * iw), iw - x)
+                    h = min(int((max(ys) - min(ys)) * ih), ih - y)
+                    if w < 1 or h < 1:
+                        continue
+                    crop = pixmap.copy(x, y, w, h).scaled(
+                        QSize(160, 100),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+                    box_data = list(zip(xs, ys))  # polygon points list
+
+                else:
                     continue
-                crop = pixmap.copy(x, y, w, h).scaled(
-                    QSize(160, 100),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+
                 thumb = self._make_thumb(crop, fname)
                 item = QListWidgetItem(QIcon(thumb), "")
                 item.setToolTip(fname)
                 item.setData(Qt.ItemDataRole.UserRole, fname)
-                item.setData(Qt.ItemDataRole.UserRole + 1, (cx, cy, nw, nh))
+                item.setData(Qt.ItemDataRole.UserRole + 1, box_data)
                 items.append(item)
         return items
 
@@ -191,9 +218,11 @@ class CheckModeController:
         """Update the label counts shown in check_class_list."""
         counts = self._count_labels_by_class()
         for i in range(self._ui.check_class_list.count()):
-            src = self._ui.class_list.item(i)
+            src_item = self._ui.class_list.item(i)
+            if src_item is None:
+                continue
             n = counts.get(i, 0)
-            self._ui.check_class_list.item(i).setText(f"{src.text()}  ({n})")
+            self._ui.check_class_list.item(i).setText(f"{src_item.text()}  ({n})")
 
     def _update_view_for_image(self, fname: str, cls_idx: int):
         """Remove items for fname and re-insert updated ones in place."""

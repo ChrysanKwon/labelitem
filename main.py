@@ -35,18 +35,35 @@ class SimpleLabeler(QMainWindow):
             self._nav_prev = Qt.Key.Key_Left
             self._nav_next = Qt.Key.Key_Right
 
+        # Annotation mode (detection / segmentation)
+        _cfg = config.load()
+        self.annotation_mode = _cfg.get("annotation_mode", "detection")
+        if self.annotation_mode == "segmentation":
+            self.ui.btn_mode_seg.setChecked(True)
+        else:
+            self.ui.btn_mode_det.setChecked(True)
+
         # Signal connections
         self.ui.btn_img_dir.clicked.connect(self.select_img_dir)
         self.ui.btn_save_dir.clicked.connect(self.select_save_dir)
         self.ui.btn_export_dataset.clicked.connect(self.export_dataset)
         self.ui.btn_auto_annotate.clicked.connect(self.auto_annotate)
         self.ui.btn_draw_mode.clicked.connect(self._toggle_draw_mode)
+        self.ui.btn_polygon_mode.clicked.connect(self._toggle_polygon_mode)
         self.ui.btn_delete_image.clicked.connect(self._delete_current_image)
-        self.ui.btn_check_mode.toggled.connect(self._on_check_mode_toggled)
+        self.ui.btn_mode_det.clicked.connect(lambda: self._on_annotation_mode_changed("detection"))
+        self.ui.btn_mode_seg.clicked.connect(lambda: self._on_annotation_mode_changed("segmentation"))
+        self.ui.btn_convert_to_seg.clicked.connect(self._convert_to_seg)
+        self.ui.btn_convert_to_det.clicked.connect(self._convert_to_det)
+        # Nav column
+        self.ui.btn_nav_label.clicked.connect(lambda: self._on_nav("label"))
+        self.ui.btn_nav_check.clicked.connect(lambda: self._on_nav("check"))
+        self.ui.btn_nav_video.clicked.connect(lambda: self._on_nav("video"))
         self.ui.file_list.itemClicked.connect(self.load_image)
         self.ui.check_class_list.itemClicked.connect(self._check.on_class_selected)
         self.ui.check_view.itemDoubleClicked.connect(self._check.on_item_double_clicked)
         self.ui.canvas.rectangle_drawn.connect(lambda _: self.on_rectangle_drawn())
+        self.ui.canvas.polygon_drawn.connect(self.on_polygon_drawn)
         self.ui.canvas.shape_modified.connect(lambda idx, _: self.on_shape_modified(idx))
         self.ui.shape_list.keyPressEvent = self.shape_list_key_press
 
@@ -60,6 +77,7 @@ class SimpleLabeler(QMainWindow):
         # widget has focus (but skip when a text input is focused).
         QApplication.instance().installEventFilter(self)
 
+        self._apply_mode_tool_state()
         self._restore_session()
 
     def eventFilter(self, obj, event):
@@ -73,8 +91,11 @@ class SimpleLabeler(QMainWindow):
                 if key == self._nav_next:
                     self._switch_image(1)
                     return True
-                if key == Qt.Key.Key_W:
+                if key == Qt.Key.Key_W and self.annotation_mode == 'detection':
                     self._toggle_draw_mode()
+                    return True
+                if key == Qt.Key.Key_P and self.annotation_mode == 'segmentation':
+                    self._toggle_polygon_mode()
                     return True
                 mods = event.modifiers()
                 if key == Qt.Key.Key_Z and mods & Qt.KeyboardModifier.ControlModifier:
@@ -84,7 +105,7 @@ class SimpleLabeler(QMainWindow):
                         self._undo()
                     return True
                 if key == Qt.Key.Key_Delete and mods & Qt.KeyboardModifier.ControlModifier:
-                    if not self.ui.btn_check_mode.isChecked():
+                    if self.ui.btn_nav_label.isChecked():
                         self._delete_current_image()
                     return True
         return super().eventFilter(obj, event)
@@ -92,6 +113,14 @@ class SimpleLabeler(QMainWindow):
     def _toggle_draw_mode(self):
         canvas = self.ui.canvas
         apply_draw_mode(canvas, self.ui.btn_draw_mode, not canvas.draw_mode)
+        if canvas.draw_mode:   # turning on rect → turn off polygon
+            apply_draw_mode(canvas, self.ui.btn_polygon_mode, False, polygon=True)
+
+    def _toggle_polygon_mode(self):
+        canvas = self.ui.canvas
+        apply_draw_mode(canvas, self.ui.btn_polygon_mode, not canvas.polygon_mode, polygon=True)
+        if canvas.polygon_mode:   # turning on polygon → turn off rect
+            apply_draw_mode(canvas, self.ui.btn_draw_mode, False)
 
     # ── Session persistence ───────────────────────────────────────────────────
 
@@ -108,8 +137,9 @@ class SimpleLabeler(QMainWindow):
 
     def _save_session(self):
         cfg = config.load()
-        cfg["image_dir"] = self.image_dir
-        cfg["save_dir"]  = self.save_dir
+        cfg["image_dir"]       = self.image_dir
+        cfg["save_dir"]        = self.save_dir
+        cfg["annotation_mode"] = self.annotation_mode
         config.save(cfg)
 
     # ── Directories / images ─────────────────────────────────────────────────
@@ -133,23 +163,30 @@ class SimpleLabeler(QMainWindow):
             else:
                 self.load_image(self.ui.file_list.item(0))
 
+        if self.ui.btn_nav_check.isChecked():
+            self._check.enter()
+
     def select_img_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Image Directory")
+        start = self.image_dir if self.image_dir and os.path.isdir(self.image_dir) else ""
+        path = QFileDialog.getExistingDirectory(self, "Select Image Directory", start)
         if path:
             self._apply_image_dir(path)
             self._save_session()
 
     def select_save_dir(self):
-        path = QFileDialog.getExistingDirectory(self, "Select Label Directory")
+        start = self.save_dir if self.save_dir and os.path.isdir(self.save_dir) else (self.image_dir if self.image_dir else "")
+        path = QFileDialog.getExistingDirectory(self, "Select Label Directory", start)
         if path:
             self.save_dir = path
             self.ui.lbl_save_path.setText(path)
             self._load_classes()
             self._save_session()
+            if self.ui.btn_nav_check.isChecked():
+                self._check.enter()
             # Reload labels for the currently displayed image
             if self.current_img_name and self.ui.canvas.original_size:
                 txt_path = self._txt_path_for(self.current_img_name)
-                shapes, shape_classes = io_labels.load_yolo(txt_path)
+                shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
                 self.ui.canvas.shapes        = shapes
                 self.ui.canvas.shape_classes = shape_classes
                 self.ui.canvas.update()
@@ -157,6 +194,27 @@ class SimpleLabeler(QMainWindow):
 
     def load_image(self, item):
         """Switch image: autosave current, load new image, restore existing labels."""
+        if self.current_img_name and self.ui.canvas.original_size:
+            unassigned_count = sum(1 for c in self.ui.canvas.shape_classes if c < 0)
+            if unassigned_count:
+                box = QMessageBox(self)
+                box.setWindowTitle("Unassigned Shapes")
+                box.setText(
+                    f"{unassigned_count} shape(s) have no class assigned.\n\n"
+                    "They will not be saved if you switch images now."
+                )
+                btn_back = box.addButton("Go Back", QMessageBox.ButtonRole.RejectRole)
+                box.addButton("Skip & Discard", QMessageBox.ButtonRole.DestructiveRole)
+                box.setDefaultButton(btn_back)
+                box.exec()
+                if box.clickedButton() is btn_back:
+                    # Restore file list selection to current image
+                    for i in range(self.ui.file_list.count()):
+                        if self.ui.file_list.item(i).text() == self.current_img_name:
+                            self.ui.file_list.setCurrentRow(i)
+                            break
+                    return
+
         self._autosave_yolo()
 
         self.current_img_name = item.text()
@@ -164,7 +222,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.canvas.set_image(QPixmap(img_path))
 
         txt_path = self._txt_path_for(self.current_img_name)
-        shapes, shape_classes = io_labels.load_yolo(txt_path)
+        shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
         self.ui.canvas.shapes        = shapes
         self.ui.canvas.shape_classes = shape_classes
         self.ui.canvas.update()
@@ -179,7 +237,8 @@ class SimpleLabeler(QMainWindow):
     def _autosave_yolo(self):
         """Save current boxes as a YOLO .txt. Skips if no image or directory is set.
         If there are no boxes, deletes the .txt (if it exists) to avoid being
-        mistaken for a background image.
+        mistaken for a background image — unless the file contains labels from
+        the other annotation mode, in which case it is left untouched.
         """
         if not self.current_img_name or not self.save_dir:
             return
@@ -188,10 +247,30 @@ class SimpleLabeler(QMainWindow):
             return
         txt_path = self._txt_path_for(self.current_img_name)
         if not canvas.shapes:
-            if os.path.exists(txt_path):
+            if os.path.exists(txt_path) and not self._txt_has_other_mode_labels(txt_path):
                 os.remove(txt_path)
             return
         io_labels.save_yolo(txt_path, canvas.shapes, canvas.shape_classes)
+
+    def _txt_has_other_mode_labels(self, txt_path: str) -> bool:
+        """Return True if the .txt contains lines that belong to the OTHER annotation mode."""
+        try:
+            with open(txt_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.strip().split()
+                    if not parts:
+                        continue
+                    if self.annotation_mode == 'detection':
+                        # Other mode = segmentation: odd field count >= 7
+                        if len(parts) >= 7 and len(parts) % 2 == 1:
+                            return True
+                    else:
+                        # Other mode = detection: exactly 5 fields
+                        if len(parts) == 5:
+                            return True
+        except OSError:
+            pass
+        return False
 
     # ── Box operations ────────────────────────────────────────────────────────
 
@@ -215,6 +294,13 @@ class SimpleLabeler(QMainWindow):
         self.ui.canvas.shape_classes[last] = cls_idx
         self.ui.canvas.update()
         self.ui.shape_list.addItem(self._shape_label(last))
+        self._autosave_yolo()
+
+    def on_polygon_drawn(self, index: int):
+        cls_idx = self._current_class_idx()
+        self.ui.canvas.shape_classes[index] = cls_idx
+        self.ui.canvas.update()
+        self.ui.shape_list.addItem(self._shape_label(index))
         self._autosave_yolo()
 
     def on_shape_modified(self, index):
@@ -409,14 +495,126 @@ class SimpleLabeler(QMainWindow):
             return False
         return True
 
-    def _on_check_mode_toggled(self, checked: bool):
-        if checked:
+    def _on_nav(self, mode: str):
+        """Switch between label / check / video views."""
+        if mode == "check":
             if not self._require_image_dir():
-                self.ui.btn_check_mode.setChecked(False)
+                self.ui.btn_nav_label.setChecked(True)
                 return
             self._check.enter()
-        else:
+        elif mode == "label":
             self._check.exit()
+            self.ui.center_stack.setCurrentIndex(0)
+            self.ui.bottom_left_stack.setCurrentIndex(0)
+        else:  # video
+            self._check.exit()
+            self.ui.center_stack.setCurrentIndex(2)
+            self.ui.bottom_left_stack.setCurrentIndex(2)
+
+    def _apply_mode_tool_state(self):
+        """Enable only the draw tool that matches the current annotation mode."""
+        det = (self.annotation_mode == 'detection')
+        self.ui.btn_draw_mode.setEnabled(det)
+        self.ui.btn_polygon_mode.setEnabled(not det)
+        # Turn off whichever tool is now disabled
+        canvas = self.ui.canvas
+        if det and canvas.polygon_mode:
+            apply_draw_mode(canvas, self.ui.btn_polygon_mode, False, polygon=True)
+        if not det and canvas.draw_mode:
+            apply_draw_mode(canvas, self.ui.btn_draw_mode, False)
+
+    def _on_annotation_mode_changed(self, mode: str):
+        if mode == self.annotation_mode:
+            return
+        QMessageBox.information(
+            self, "Label Folder Warning",
+            "Detection and Segmentation labels share the same filename (.txt).\n\n"
+            "If your Label Folder is the same for both modes, saving will overwrite\n"
+            "the other mode's labels.\n\n"
+            "Recommended: use separate label folders for Detection and Segmentation."
+        )
+        self.annotation_mode = mode
+        self._apply_mode_tool_state()
+        self._save_session()
+        if self.ui.btn_nav_check.isChecked():
+            self._check.enter()   # rebuild check view with new mode
+        elif self.current_img_name:
+            txt_path = self._txt_path_for(self.current_img_name)
+            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
+            self.ui.canvas.shapes        = shapes
+            self.ui.canvas.shape_classes = shape_classes
+            self.ui.canvas.update()
+            self._refresh_shape_list()
+
+    def _convert_to_seg(self):
+        if not self.save_dir:
+            QMessageBox.warning(self, "No Label Directory",
+                                "Please select a label directory first.")
+            return
+        reply = QMessageBox.question(
+            self, "Convert Detection → Segmentation",
+            "This will convert all bbox labels in the label folder to 4-point polygon format.\n"
+            "The operation is lossless (rectangles become 4-vertex polygons).\n\n"
+            "Existing .txt files will be overwritten. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._autosave_yolo()
+        try:
+            count = io_labels.convert_det_to_seg(self.save_dir)
+        except ValueError as e:
+            QMessageBox.warning(self, "Mixed Labels Detected", str(e))
+            return
+        QMessageBox.information(self, "Convert Complete",
+                                f"Converted {count} bounding box(es) to polygon format.")
+        if self.current_img_name:
+            txt_path = self._txt_path_for(self.current_img_name)
+            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
+            self.ui.canvas.shapes        = shapes
+            self.ui.canvas.shape_classes = shape_classes
+            self.ui.canvas.update()
+            self._refresh_shape_list()
+
+    def _convert_to_det(self):
+        if not self.save_dir:
+            QMessageBox.warning(self, "No Label Directory",
+                                "Please select a label directory first.")
+            return
+        reply = QMessageBox.warning(
+            self, "Convert Segmentation → Detection (Lossy)",
+            "This will convert all polygon labels to bounding boxes (bounding rect).\n\n"
+            "⚠️  This is LOSSY — polygon shape detail will be lost permanently.\n"
+            "Existing .txt files will be overwritten. Are you sure?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        reply2 = QMessageBox.warning(
+            self, "Confirm Lossy Conversion",
+            "Confirm: permanently replace all polygon labels with bounding boxes?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply2 != QMessageBox.StandardButton.Yes:
+            return
+        self._autosave_yolo()
+        try:
+            count = io_labels.convert_seg_to_det(self.save_dir)
+        except ValueError as e:
+            QMessageBox.warning(self, "Mixed Labels Detected", str(e))
+            return
+        QMessageBox.information(self, "Convert Complete",
+                                f"Converted {count} polygon(s) to bounding box format.")
+        if self.current_img_name:
+            txt_path = self._txt_path_for(self.current_img_name)
+            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
+            self.ui.canvas.shapes        = shapes
+            self.ui.canvas.shape_classes = shape_classes
+            self.ui.canvas.update()
+            self._refresh_shape_list()
 
     # ── Auto annotate ─────────────────────────────────────────────────────────
 
@@ -428,12 +626,13 @@ class SimpleLabeler(QMainWindow):
                                 "Please select a label directory first.")
             return
 
-        dlg = AutoAnnotateDialog(self)
+        dlg = AutoAnnotateDialog(self, annotation_mode=self.annotation_mode)
         if dlg.exec() != AutoAnnotateDialog.DialogCode.Accepted:
             return
 
         model_path = dlg.model_path
         conf = dlg.conf()
+        annotate_mode = dlg.annotation_mode()
 
         reply = QMessageBox.warning(
             self, "Overwrite Labels?",
@@ -520,6 +719,7 @@ class SimpleLabeler(QMainWindow):
                 batches[idx], self.image_dir, self.save_dir,
                 offset=offset, total=total,
                 write_classes=(idx == 0),
+                annotation_mode=annotate_mode,
             )
             worker.set_state(_state)
             thread = QThread(self)
@@ -553,7 +753,7 @@ class SimpleLabeler(QMainWindow):
                     self._load_classes()
                     if self.current_img_name:
                         txt_path = self._txt_path_for(self.current_img_name)
-                        shapes, shape_classes = io_labels.load_yolo(txt_path)
+                        shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
                         self.ui.canvas.shapes        = shapes
                         self.ui.canvas.shape_classes = shape_classes
                         self.ui.canvas.update()
