@@ -21,7 +21,7 @@ class VideoModeController(VideoPlaybackBase):
     # ── Slots (called from main.py) ───────────────────────────────────────────
 
     def open_video(self):
-        result = self._load_video_cap(os.path.dirname(getattr(self, '_path', '')) or "")
+        result = self._load_video_cap(os.path.dirname(self._path) or os.path.expanduser("~"))
         if result is None:
             return
 

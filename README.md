@@ -1,6 +1,6 @@
 # LabelItem
 
-A lightweight YOLO image annotation tool built with PySide6. Supports both detection (bounding box) and segmentation (polygon) annotation, with Check Mode, Auto Annotate, Video Capture, Model Check, and dataset export.
+A lightweight YOLO image annotation tool built with PySide6. Supports both detection (bounding box) and segmentation (polygon) annotation, with Image Check, Auto Annotate, Video Capture, Model Check (with full-video scan), and dataset export.
 
 > Built as a hands-on experiment using Claude Code to develop a custom labeling solution from scratch.
 
@@ -56,13 +56,21 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
 - Load a video + any Ultralytics `.pt` model to review inference results frame by frame
 - Scrub to any frame; inference fires automatically 400 ms after scrubbing stops
 - Inference runs once per frame at conf=0.01 and caches all detections — adjusting the **Conf:** spinner re-filters the cache instantly without re-running the model
-- **Class filter** — dropdown above the detection list to show only one class at a time
-- Detected objects listed in the sidebar with class name and confidence score
 - Type a frame number in the input box next to the counter and press Enter to jump directly to that frame
-- **Delete Selected** — remove a false positive from the list; the overlay redraws instantly
-- **Capture + Save Labels** — saves the frame as JPEG and writes the remaining (corrected) detections as a YOLO `.txt` label, both ready for further annotation in Image Label mode
 - Supports both detection models (bounding boxes) and segmentation models (polygon masks)
 - Model and video file dialogs track their own last-used directories independently
+
+**Frame mode** (default)
+- **Class filter** — dropdown to show only one class at a time in the detection list
+- Detected objects listed with class name and confidence score
+- **Delete Selected** — remove a false positive from the list; overlay redraws instantly
+- **Capture + Save Labels** — saves the frame as JPEG and writes the remaining (corrected) detections as a YOLO `.txt` label, both ready for further annotation in Image Label mode
+
+**Scan mode**
+- **Scan All Frames** — runs inference on every frame of the loaded video in a background thread; a progress bar tracks completion
+- Filter results by class and exact detection count (type a number and press Enter)
+- Click any result row to jump directly to that frame; the video and overlay update immediately
+- Switch back to Frame mode to resume normal per-frame review
 
 ### Image Label — other features
 - **Unassigned shape warning** — if any shape has no class assigned when switching images, a dialog prompts to go back or skip (unassigned shapes are never saved to file)
@@ -170,6 +178,7 @@ labelitem/
 - **Unassigned shapes** — shapes with no class assigned are never written to disk. Switching images while unassigned shapes exist triggers a warning; choose **Go Back** to assign them or **Skip & Discard** to proceed without saving them.
 - **Image Check** — label counts and gallery update when switching annotation mode mid-session.
 - **Model Check labels** — captured frames are saved to the image folder; corresponding `.txt` labels (with deleted detections excluded) are saved to the label folder. Both are immediately visible in Image Label mode.
+- **Model Check scan** — Scan mode processes the entire video offline; results are not lost when scrubbing frames. Switching to Frame mode and back preserves the scan result list until a new video or model is loaded.
 - **Orphaned labels** — `.txt` files whose image has been deleted outside the app accumulate silently. Use **Clean Orphaned Labels** in the file list panel to find and remove them. Export already ignores orphaned labels automatically.
 
 ---

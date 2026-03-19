@@ -2,7 +2,7 @@
 
 import os
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QThread, Signal
 from PySide6.QtWidgets import QFileDialog, QMessageBox
 
 from app import io_labels
@@ -22,6 +22,8 @@ class ModelCheckController(VideoPlaybackBase):
         self._frame_input   = ui.mc_frame_input
         self._counter_label = ui.lbl_mc_counter
 
+        self._path               = ""   # last loaded video path
+        self._model_path         = ""   # last loaded model path (independent of video)
         self._model              = None
         self._model_names        = {}
         self._raw_detections     = []   # all detections at conf=0.01
@@ -32,6 +34,9 @@ class ModelCheckController(VideoPlaybackBase):
         self._infer_timer.setSingleShot(True)
         self._infer_timer.timeout.connect(self._run_inference)
 
+        self._scan_results: list = []   # [{frame: int, counts: {class_name: int}}]
+        self._scan_thread = None
+
     @property
     def _save_dir(self) -> str:
         return self._mw.save_dir
@@ -39,7 +44,7 @@ class ModelCheckController(VideoPlaybackBase):
     # ── Slots (called from main.py) ───────────────────────────────────────────
 
     def open_video(self):
-        result = self._load_video_cap(os.path.dirname(getattr(self, '_path', '')) or "")
+        result = self._load_video_cap(os.path.dirname(self._path) or os.path.expanduser("~"))
         if result is None:
             return
 
@@ -56,6 +61,7 @@ class ModelCheckController(VideoPlaybackBase):
 
         self._scrubber.setRange(0, max(0, total - 1))
         self._scrubber.setValue(0)
+        self._clear_scan()
         self._set_controls_enabled(True)
         self._show_frame(0)
 
@@ -67,7 +73,7 @@ class ModelCheckController(VideoPlaybackBase):
                                  "Please run:  pip install ultralytics")
             return
 
-        model_dir = os.path.dirname(getattr(self, '_model_path', '')) or ""
+        model_dir = os.path.dirname(self._model_path) or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(
             self._mw, "Load YOLO Model",
             model_dir,
@@ -84,6 +90,7 @@ class ModelCheckController(VideoPlaybackBase):
         except Exception as e:
             QMessageBox.critical(self._mw, "Model Load Error", str(e))
             return
+        self._clear_scan()
 
         model_name = os.path.basename(path)
         n_classes = len(self._model_names)
@@ -92,6 +99,7 @@ class ModelCheckController(VideoPlaybackBase):
 
         if self._cap:
             self._ui.btn_mc_capture.setEnabled(True)
+            self._ui.btn_mc_scan.setEnabled(True)
             if self._current_frame_bgr is not None:
                 self._run_inference()
 
@@ -146,7 +154,7 @@ class ModelCheckController(VideoPlaybackBase):
 
     def _on_frame_shown(self, idx: int, frame):
         """Trigger debounced inference 400 ms after scrubbing stops."""
-        if self._model:
+        if self._model and self._ui.mc_mode_stack.currentIndex() == 0:
             self._infer_timer.start(400)
 
     # ── Private ───────────────────────────────────────────────────────────────
@@ -241,6 +249,94 @@ class ModelCheckController(VideoPlaybackBase):
 
         self._frame_label.setPixmap(bgr_to_pixmap(frame, self._frame_label.size()))
 
+    # ── Scan all frames ───────────────────────────────────────────────────────
+
+    def scan_all_frames(self):
+        """Start background scan of all frames."""
+        if not self._cap or not self._model or not self._path:
+            return
+        if self._scan_thread and self._scan_thread.isRunning():
+            return
+
+        conf = self._ui.mc_conf_spin.value()
+        self._scan_thread = ScanWorker(self._path, self._model, conf)
+        self._scan_thread.progress.connect(self._on_scan_progress)
+        self._scan_thread.finished.connect(self._on_scan_done)
+
+        self._ui.mc_scan_progress.setVisible(True)
+        self._ui.mc_scan_progress.setValue(0)
+        self._ui.btn_mc_scan.setEnabled(False)
+        self._scan_thread.start()
+
+    def _on_scan_progress(self, cur: int, total: int):
+        self._ui.mc_scan_progress.setMaximum(total)
+        self._ui.mc_scan_progress.setValue(cur)
+        self._mw.statusBar().showMessage(f"Scanning {cur}/{total} frames…")
+
+    def _on_scan_done(self, results: list):
+        self._scan_results = results
+        self._ui.mc_scan_progress.setVisible(False)
+        self._ui.btn_mc_scan.setEnabled(True)
+
+        # Populate class combo from all seen class names
+        all_classes = sorted({name for r in results for name in r['counts']})
+        self._ui.mc_scan_class_combo.blockSignals(True)
+        self._ui.mc_scan_class_combo.clear()
+        self._ui.mc_scan_class_combo.addItem("All")
+        self._ui.mc_scan_class_combo.addItems(all_classes)
+        self._ui.mc_scan_class_combo.blockSignals(False)
+
+        self._apply_scan_filter()
+        n = len(results)
+        self._mw.statusBar().showMessage(f"Scan complete: {n} frames processed.", 5000)
+
+    def _apply_scan_filter(self, *_):
+        """Filter scan results by class + count (exact match) and populate scan list."""
+        cls_name = self._ui.mc_scan_class_combo.currentText()
+        try:
+            count_val = int(self._ui.mc_scan_count_input.text())
+        except ValueError:
+            return
+
+        def matches(counts: dict) -> bool:
+            if cls_name == "All":
+                total = sum(counts.values())
+            else:
+                total = counts.get(cls_name, 0)
+            return total == count_val
+
+        self._ui.mc_scan_list.clear()
+        for r in self._scan_results:
+            if matches(r['counts']):
+                summary = "  ".join(f"{n}:{c}" for n, c in sorted(r['counts'].items()))
+                self._ui.mc_scan_list.addItem(
+                    f"Frame {r['frame'] + 1:>6}  |  {summary or '(no detections)'}")
+
+        found = self._ui.mc_scan_list.count()
+        total = len(self._scan_results)
+        self._mw.statusBar().showMessage(f"Scan filter: {found}/{total} frames match.", 3000)
+
+    def jump_to_scan_frame(self, row: int):
+        """Called when user clicks a scan result row — jump to that frame."""
+        if row < 0:
+            return
+        item = self._ui.mc_scan_list.item(row)
+        if item is None:
+            return
+        text = item.text()
+        # parse "Frame   42  | ..." → frame index 41 (0-based)
+        try:
+            frame_1based = int(text.split("|")[0].replace("Frame", "").strip())
+            self._show_frame(frame_1based - 1)
+        except ValueError:
+            pass
+
+    def _clear_scan(self):
+        """Reset scan state when video/model changes."""
+        self._scan_results = []
+        self._ui.mc_scan_progress.setVisible(False)
+        self._ui.mc_scan_list.clear()
+
     def _set_controls_enabled(self, enabled: bool):
         for widget in (self._play_btn,
                        self._ui.btn_mc_prev,
@@ -250,3 +346,40 @@ class ModelCheckController(VideoPlaybackBase):
             widget.setEnabled(enabled)
         if enabled and self._model:
             self._ui.btn_mc_capture.setEnabled(True)
+            self._ui.btn_mc_scan.setEnabled(True)
+        elif not enabled:
+            self._ui.btn_mc_scan.setEnabled(False)
+
+
+# ── Background scan worker ────────────────────────────────────────────────────
+
+class ScanWorker(QThread):
+    progress = Signal(int, int)
+    finished = Signal(object)
+
+    def __init__(self, video_path: str, model, conf: float):
+        super().__init__()
+        self._video_path = video_path
+        self._model      = model
+        self._conf       = conf
+
+    def run(self):
+        import cv2
+        cap   = cv2.VideoCapture(self._video_path)
+        total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        results = []
+        for i in range(total):
+            ret, frame = cap.read()
+            if not ret:
+                break
+            r = self._model(frame, conf=0.01, verbose=False)[0]
+            counts: dict = {}
+            for box in r.boxes:
+                if float(box.conf[0]) < self._conf:
+                    continue
+                name = self._model.names[int(box.cls[0])]
+                counts[name] = counts.get(name, 0) + 1
+            results.append({'frame': i, 'counts': counts})
+            self.progress.emit(i + 1, total)
+        cap.release()
+        self.finished.emit(results)

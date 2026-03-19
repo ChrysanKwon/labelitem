@@ -77,6 +77,14 @@ class SimpleLabeler(QMainWindow):
         self.ui.mc_class_filter.currentTextChanged.connect(self._mc.filter_detections)
         self.ui.btn_mc_delete_det.clicked.connect(self._mc.delete_detection)
         self.ui.btn_mc_capture.clicked.connect(self._mc.capture_with_labels)
+        self.ui.btn_mc_mode_frame.clicked.connect(
+            lambda: self.ui.mc_mode_stack.setCurrentIndex(0))
+        self.ui.btn_mc_mode_scan.clicked.connect(
+            lambda: self.ui.mc_mode_stack.setCurrentIndex(1))
+        self.ui.btn_mc_scan.clicked.connect(self._mc.scan_all_frames)
+        self.ui.mc_scan_class_combo.currentTextChanged.connect(self._mc._apply_scan_filter)
+        self.ui.mc_scan_count_input.returnPressed.connect(self._mc._apply_scan_filter)
+        self.ui.mc_scan_list.currentRowChanged.connect(self._mc.jump_to_scan_frame)
         # Video mode controls
         self.ui.btn_open_video.clicked.connect(self._video.open_video)
         self.ui.btn_extract_frames.clicked.connect(self._video.open_extract_dialog)
@@ -625,6 +633,8 @@ class SimpleLabeler(QMainWindow):
             self.ui.bottom_left_stack.setCurrentIndex(3)
         self.ui.toolbar_widget.setVisible(mode == "label")
         self.ui.right_widget.setVisible(mode == "label")
+        self.ui.btn_auto_annotate.setVisible(mode == "label")
+        self.ui.btn_export_dataset.setVisible(mode in ("label", "check"))
 
     def _apply_mode_tool_state(self):
         """Enable only the draw tool that matches the current annotation mode."""

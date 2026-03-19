@@ -3,7 +3,7 @@ import copy
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QLabel, QWidget, QLineEdit,
                                QStackedWidget, QSizePolicy, QButtonGroup, QSlider,
-                               QDoubleSpinBox, QComboBox)
+                               QDoubleSpinBox, QComboBox, QProgressBar)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QCursor, QPolygon
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, Signal
 
@@ -758,17 +758,71 @@ class Ui_MainWindow(object):
 
         sep_b = QWidget(); sep_b.setStyleSheet(_mc_sep_style)
 
+        # ── Mode toggle ───────────────────────────────────────────────────────
+        _toggle_base = (
+            "QPushButton { border:1px solid #555; color:#aaa; padding:4px 0;"
+            " font-size:12px; font-weight:bold; }"
+            "QPushButton:checked { background:#1565c0; color:white; border-color:#1565c0; }"
+            "QPushButton:hover:!checked { background:#2a2a2a; }"
+        )
+        self.btn_mc_mode_frame = QPushButton("▶  Frame")
+        self.btn_mc_mode_frame.setCheckable(True)
+        self.btn_mc_mode_frame.setChecked(True)
+        self.btn_mc_mode_frame.setStyleSheet(
+            _toggle_base + "QPushButton { border-radius:4px 0 0 4px; background:#1e1e1e; }")
+        self.btn_mc_mode_scan  = QPushButton("📊  Scan")
+        self.btn_mc_mode_scan.setCheckable(True)
+        self.btn_mc_mode_scan.setStyleSheet(
+            _toggle_base + "QPushButton { border-radius:0 4px 4px 0; background:#1e1e1e;"
+            " border-left:none; }")
+        self.mc_mode_group = QButtonGroup()
+        self.mc_mode_group.setExclusive(True)
+        self.mc_mode_group.addButton(self.btn_mc_mode_frame, 0)
+        self.mc_mode_group.addButton(self.btn_mc_mode_scan,  1)
+        mc_mode_row = QHBoxLayout()
+        mc_mode_row.setSpacing(0)
+        mc_mode_row.addWidget(self.btn_mc_mode_frame)
+        mc_mode_row.addWidget(self.btn_mc_mode_scan)
+
+        # ── Mode stack (page 0 = Frame, page 1 = Scan) ───────────────────────
+        from PySide6.QtWidgets import QStackedWidget as _SW
+        self.mc_mode_stack = _SW()
+
+        # Page 0 — Frame inference
+        page_frame = QWidget()
+        frame_layout = QVBoxLayout(page_frame)
+        frame_layout.setContentsMargins(0, 0, 0, 0)
+        frame_layout.setSpacing(4)
+
+        mc_det_header = QHBoxLayout()
+        mc_det_header.addWidget(QLabel("Detections:"))
+        _combo_style = (
+            "QComboBox { background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:10pt; }"
+            "QComboBox::drop-down { border:none; }"
+            "QComboBox QAbstractItemView { background:#2d2d2d; color:#ccc; }"
+        )
+        self.mc_class_filter = QComboBox()
+        self.mc_class_filter.addItem("All")
+        self.mc_class_filter.setStyleSheet(_combo_style)
+        mc_det_header.addWidget(self.mc_class_filter)
+        frame_layout.addLayout(mc_det_header)
+
         self.mc_detection_list = QListWidget()
         self.mc_detection_list.setStyleSheet(
             "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; }"
             "QListWidget::item:selected { background:#1565c0; color:white; }"
         )
+        frame_layout.addWidget(self.mc_detection_list, stretch=1)
+
         self.btn_mc_delete_det = QPushButton("🗑 Delete Selected")
         self.btn_mc_delete_det.setFixedHeight(28)
         self.btn_mc_delete_det.setStyleSheet(
             "background-color: #b71c1c; color: white; border-radius: 3px;")
+        frame_layout.addWidget(self.btn_mc_delete_det)
 
         sep_c = QWidget(); sep_c.setStyleSheet(_mc_sep_style)
+        frame_layout.addWidget(sep_c)
 
         self.btn_mc_capture = QPushButton("📷 Capture + Save Labels")
         self.btn_mc_capture.setFixedHeight(44)
@@ -779,6 +833,62 @@ class Ui_MainWindow(object):
             "QPushButton:hover { background-color: #1976d2; }"
             "QPushButton:disabled { background-color: #222; color: #484848; }"
         )
+        frame_layout.addWidget(self.btn_mc_capture)
+        self.mc_mode_stack.addWidget(page_frame)  # index 0
+
+        # Page 1 — Scan all frames
+        page_scan = QWidget()
+        scan_layout = QVBoxLayout(page_scan)
+        scan_layout.setContentsMargins(0, 0, 0, 0)
+        scan_layout.setSpacing(4)
+
+        self.btn_mc_scan = QPushButton("📊 Scan All Frames")
+        self.btn_mc_scan.setFixedHeight(36)
+        self.btn_mc_scan.setEnabled(False)
+        self.btn_mc_scan.setStyleSheet(
+            "QPushButton { background-color: #2d4a2d; color: #8bc34a; font-weight: bold;"
+            " border-radius: 5px; border: 1px solid #4a7c4a; }"
+            "QPushButton:hover { background-color: #3a5e3a; }"
+            "QPushButton:disabled { background-color: #222; color: #484848; border-color:#333; }"
+        )
+        scan_layout.addWidget(self.btn_mc_scan)
+
+        self.mc_scan_progress = QProgressBar()
+        self.mc_scan_progress.setFixedHeight(6)
+        self.mc_scan_progress.setTextVisible(False)
+        self.mc_scan_progress.setStyleSheet(
+            "QProgressBar { border:none; background:#333; border-radius:3px; }"
+            "QProgressBar::chunk { background:#8bc34a; border-radius:3px; }"
+        )
+        self.mc_scan_progress.setVisible(False)
+        scan_layout.addWidget(self.mc_scan_progress)
+
+        # Scan filter row  (class = count)
+        scan_filter_row = QHBoxLayout()
+        scan_filter_row.setSpacing(6)
+        self.mc_scan_class_combo = QComboBox()
+        self.mc_scan_class_combo.addItem("All")
+        self.mc_scan_class_combo.setStyleSheet(_combo_style)
+        self.mc_scan_count_input = QLineEdit()
+        self.mc_scan_count_input.setPlaceholderText("count")
+        self.mc_scan_count_input.setFixedWidth(68)
+        self.mc_scan_count_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.mc_scan_count_input.setStyleSheet(
+            "background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:10pt;"
+        )
+        scan_filter_row.addWidget(self.mc_scan_class_combo, stretch=1)
+        scan_filter_row.addWidget(QLabel("="))
+        scan_filter_row.addWidget(self.mc_scan_count_input)
+        scan_layout.addLayout(scan_filter_row)
+
+        self.mc_scan_list = QListWidget()
+        self.mc_scan_list.setStyleSheet(
+            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; }"
+            "QListWidget::item:selected { background:#2e7d32; color:white; }"
+        )
+        scan_layout.addWidget(self.mc_scan_list, stretch=1)
+        self.mc_mode_stack.addWidget(page_scan)   # index 1
 
         mc_layout.addWidget(self.btn_mc_open_video)
         mc_layout.addWidget(self.lbl_mc_video_info)
@@ -787,23 +897,8 @@ class Ui_MainWindow(object):
         mc_layout.addWidget(self.lbl_mc_model_info)
         mc_layout.addLayout(mc_conf_row)
         mc_layout.addWidget(sep_b)
-
-        mc_det_header = QHBoxLayout()
-        mc_det_header.addWidget(QLabel("Detections:"))
-        self.mc_class_filter = QComboBox()
-        self.mc_class_filter.addItem("All")
-        self.mc_class_filter.setStyleSheet(
-            "QComboBox { background:#2d2d2d; color:#ccc; border:1px solid #444;"
-            " border-radius:3px; padding:1px 4px; font-size:11px; }"
-            "QComboBox::drop-down { border:none; }"
-            "QComboBox QAbstractItemView { background:#2d2d2d; color:#ccc; }"
-        )
-        mc_det_header.addWidget(self.mc_class_filter)
-        mc_layout.addLayout(mc_det_header)
-        mc_layout.addWidget(self.mc_detection_list, stretch=1)
-        mc_layout.addWidget(self.btn_mc_delete_det)
-        mc_layout.addWidget(sep_c)
-        mc_layout.addWidget(self.btn_mc_capture)
+        mc_layout.addLayout(mc_mode_row)
+        mc_layout.addWidget(self.mc_mode_stack, stretch=1)
 
         self.bottom_left_stack.addWidget(page_files)   # index 0
         self.bottom_left_stack.addWidget(page_check)   # index 1
@@ -812,14 +907,14 @@ class Ui_MainWindow(object):
 
         self.left_bar.addWidget(self.btn_img_dir)
         self.left_bar.addWidget(self.lbl_img_path)
-        self.left_bar.addSpacing(8)
+        self.left_bar.addSpacing(10)
         self.left_bar.addWidget(self.btn_save_dir)
         self.left_bar.addWidget(self.lbl_save_path)
-        self.left_bar.addSpacing(16)
+        self.left_bar.addSpacing(10)
         self.left_bar.addWidget(self.btn_export_dataset)
-        self.left_bar.addSpacing(4)
+        self.left_bar.addSpacing(6)
         self.left_bar.addWidget(self.btn_auto_annotate)
-        self.left_bar.addStretch()
+        self.left_bar.addSpacing(10)
         self.left_bar.addWidget(self.bottom_left_stack, stretch=2)
 
         # ── Toolbar (above canvas) ────────────────────────────────────────
@@ -839,7 +934,7 @@ class Ui_MainWindow(object):
         )
         _conv_style = (
             "QPushButton { border:1px solid #444; border-radius:4px; color:#aaa;"
-            " padding:4px 8px; font-size:11px; background:#2d2d2d; }"
+            " padding:4px 8px; font-size:10pt; background:#2d2d2d; }"
             "QPushButton:hover { background:#3a3a3a; color:#ddd; }"
         )
         _sep_style = "background:#444; max-width:1px; min-width:1px; margin:4px 6px;"
@@ -947,7 +1042,7 @@ class Ui_MainWindow(object):
         self.video_frame_input.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.video_frame_input.setStyleSheet(
             "background:#2d2d2d; color:#ccc; border:1px solid #444;"
-            " border-radius:3px; padding:1px 4px; font-size:11px;")
+            " border-radius:3px; padding:1px 4px; font-size:10pt;")
         self.video_frame_input.setEnabled(False)
 
         self.lbl_video_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")
@@ -1005,7 +1100,7 @@ class Ui_MainWindow(object):
         self.mc_frame_input.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.mc_frame_input.setStyleSheet(
             "background:#2d2d2d; color:#ccc; border:1px solid #444;"
-            " border-radius:3px; padding:1px 4px; font-size:11px;")
+            " border-radius:3px; padding:1px 4px; font-size:10pt;")
         self.mc_frame_input.setEnabled(False)
 
         self.lbl_mc_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")

@@ -23,6 +23,8 @@ class VideoPlaybackBase:
     def __init__(self, main_window):
         self._mw                = main_window
         self._cap               = None
+        self._path              = ""
+        self._stem              = ""
         self._fps               = 25.0
         self._total_frames      = 0
         self._current_frame     = 0
