@@ -1,0 +1,14 @@
+{
+  "_help": {
+    "image_dir": "Last opened image folder (auto-saved, no need to edit manually)",
+    "save_dir": "Label storage folder (auto-saved, no need to edit manually)",
+    "nav_keys": "Key scheme for switching images | options: 'arrows' (default, ← →) or 'ad' (A D keys)",
+    "annotate_batch_size": "Images per QThread batch for Auto Annotate (default: 400, reduce if it crashes)",
+    "annotation_mode": "Annotation type | options: 'detection' (bbox) or 'segmentation' (polygon)"
+  },
+  "annotation_mode": "detection",
+  "annotate_batch_size": 400,
+  "image_dir": "",
+  "save_dir": "",
+  "nav_keys": "arrows"
+}

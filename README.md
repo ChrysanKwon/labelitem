@@ -1,6 +1,6 @@
 # LabelItem
 
-A lightweight YOLO image annotation tool built with PySide6. Supports both detection (bounding box) and segmentation (polygon) annotation, with Check Mode, Auto Annotate, and dataset export.
+A lightweight YOLO image annotation tool built with PySide6. Supports both detection (bounding box) and segmentation (polygon) annotation, with Check Mode, Auto Annotate, Video Capture, Model Check, and dataset export.
 
 > Built as a hands-on experiment using Claude Code to develop a custom labeling solution from scratch.
 
@@ -22,13 +22,13 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
 - Both convert buttons block if a single .txt file contains mixed bbox+polygon lines
 
 ### Navigation
-- **Label / Check / Video** — switch views using the nav column on the left
+- **Image Label / Image Check / Video Capture / Model Check** — switch views using the nav column on the left
 - Arrow keys or A/D to navigate between images (configurable in `app/config.json`)
 
-### Check Mode
+### Image Check
 - Browse crops of a selected class across all images in a gallery view
 - Label count per class shown in the sidebar — updates when switching annotation mode
-- Double-click any crop to open a full editing dialog without leaving Check Mode
+- Double-click any crop to open a full editing dialog without leaving Image Check
 
 ### Auto Annotate
 - Run any Ultralytics YOLO model on the entire image directory in the background
@@ -44,7 +44,21 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
   - Segmentation labels → `segmentation` polygon + `bbox` bounding rect
   - Mixed folder (some files bbox, others polygon) → blocked with a warning
 
-### Other
+### Video Capture
+- Load a video and scrub through it using a playback bar (⏮ ⏯ ⏭ + slider)
+- **Capture Frame** — save the current frame as a JPEG to the image folder; the file is immediately added to the file list
+- **Extract Frames…** — batch-extract N frames by evenly spaced or random sampling into the image folder
+
+### Model Check
+- Load a video + any Ultralytics `.pt` model to review inference results frame by frame
+- Scrub to any frame; inference fires automatically 400 ms after scrubbing stops
+- Detected objects listed in the sidebar with class name and confidence score
+- **Delete Selected** — remove a false positive from the list; the overlay redraws instantly
+- **Capture + Save Labels** — saves the frame as JPEG and writes the remaining (corrected) detections as a YOLO `.txt` label, both ready for further annotation in Image Label mode
+- Supports both detection models (bounding boxes) and segmentation models (polygon masks)
+- Adjustable confidence threshold via the **Conf:** spinner
+
+### Image Label — other features
 - **Unassigned shape warning** — if any shape has no class assigned when switching images, a dialog prompts to go back or skip (unassigned shapes are never saved to file)
 - **Undo / Redo** — Ctrl+Z / Ctrl+Shift+Z, per-image history (50 steps)
 - **Delete Image & Label** — removes image and .txt together with double confirmation (keyboard: Ctrl+Delete, or the button in the file list)
@@ -60,8 +74,8 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
 ```bash
 pip install PySide6
 
-# Optional — only needed for Auto Annotate
-pip install ultralytics
+# Optional — needed for Auto Annotate, Video Capture, and Model Check
+pip install ultralytics opencv-python
 ```
 
 ### GPU Acceleration (optional)
@@ -74,6 +88,15 @@ Auto Annotate uses CPU by default. For NVIDIA GPU acceleration:
    ```bash
    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
    ```
+
+### Configuration (optional)
+
+`app/config.json` is created automatically — no setup needed. Most settings are managed through the UI. Two values can be adjusted manually in the file if needed:
+
+- `nav_keys` — `"arrows"` (← →, default) or `"ad"` (A D keys)
+- `annotate_batch_size` — images per Auto Annotate batch (default `400`; reduce if it crashes)
+
+See `app/config.example.json` for the full list of available keys.
 
 ### Run
 
@@ -111,10 +134,13 @@ labelitem/
     config.py                  Session state and settings (reads/writes config.json)
     config.json                Persisted session data (gitignored)
     utils.py                   Shared UI helpers (shape label formatting, draw mode sync)
-    check_mode.py              CheckModeController — all Check Mode logic
-    check_edit_dialog.py       Per-image label editing dialog used from Check Mode
+    check_mode.py              CheckModeController — all Image Check logic
+    check_edit_dialog.py       Per-image label editing dialog used from Image Check
     export_dialog.py           Export dataset dialog (YOLO / COCO)
     auto_annotate_dialog.py    Auto-annotate settings dialog and QThread worker
+    video_mode.py              VideoModeController — Video Capture playback and frame extraction
+    frame_extract_dialog.py    Batch frame extraction dialog (evenly spaced / random)
+    model_check.py             ModelCheckController — inference overlay, false positive removal
 ```
 
 ---
@@ -128,18 +154,10 @@ labelitem/
 - **Auto Annotate batch size** — default 400 images per batch. Reduce `annotate_batch_size` in `app/config.json` if it crashes.
 - **Undo/Redo** — scoped to the current image; cleared on image switch.
 - **Unassigned shapes** — shapes with no class assigned are never written to disk. Switching images while unassigned shapes exist triggers a warning; choose **Go Back** to assign them or **Skip & Discard** to proceed without saving them.
-- **Check Mode** — label counts and gallery update when switching annotation mode mid-session.
+- **Image Check** — label counts and gallery update when switching annotation mode mid-session.
+- **Model Check labels** — captured frames are saved to the image folder; corresponding `.txt` labels (with deleted detections excluded) are saved to the label folder. Both are immediately visible in Image Label mode.
 
 ---
-
-## Roadmap
-
-### Video Mode *(TODO)*
-
-The Video tab in the nav column is a placeholder. Planned features:
-
-1. **Random frame extraction** — specify a video file and N; the tool randomly samples N frames and copies them into the current image folder, ready for annotation
-2. **Interactive frame capture** — load a video and play it through a scrubber; pause and capture the current frame to the image folder at any point
 
 ---
 

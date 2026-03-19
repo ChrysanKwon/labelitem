@@ -11,6 +11,8 @@ from app import io_labels
 from app.export_dialog import ExportDialog
 from app.auto_annotate_dialog import AutoAnnotateDialog, AnnotateWorker
 from app.check_mode import CheckModeController
+from app.video_mode import VideoModeController
+from app.model_check import ModelCheckController
 from app.utils import format_shape_label, apply_draw_mode
 
 
@@ -25,6 +27,8 @@ class SimpleLabeler(QMainWindow):
         self._annotate_thread = None
         self._annotate_worker = None
         self._check = CheckModeController(self)
+        self._video = VideoModeController(self)
+        self._mc    = ModelCheckController(self)
 
         # Load key scheme from config ("arrows" or "ad")
         _nav = config.load().get("nav_keys", "arrows")
@@ -59,6 +63,24 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_nav_label.clicked.connect(lambda: self._on_nav("label"))
         self.ui.btn_nav_check.clicked.connect(lambda: self._on_nav("check"))
         self.ui.btn_nav_video.clicked.connect(lambda: self._on_nav("video"))
+        self.ui.btn_nav_model_check.clicked.connect(lambda: self._on_nav("model_check"))
+        # Model Check controls
+        self.ui.btn_mc_open_video.clicked.connect(self._mc.open_video)
+        self.ui.btn_mc_load_model.clicked.connect(self._mc.load_model)
+        self.ui.btn_mc_play.clicked.connect(self._mc.toggle_play)
+        self.ui.btn_mc_prev.clicked.connect(lambda: self._mc.step_frame(-1))
+        self.ui.btn_mc_next.clicked.connect(lambda: self._mc.step_frame(1))
+        self.ui.mc_scrubber.valueChanged.connect(self._mc.on_scrubber_moved)
+        self.ui.btn_mc_delete_det.clicked.connect(self._mc.delete_detection)
+        self.ui.btn_mc_capture.clicked.connect(self._mc.capture_with_labels)
+        # Video mode controls
+        self.ui.btn_open_video.clicked.connect(self._video.open_video)
+        self.ui.btn_extract_frames.clicked.connect(self._video.open_extract_dialog)
+        self.ui.btn_video_play.clicked.connect(self._video.toggle_play)
+        self.ui.btn_video_prev.clicked.connect(lambda: self._video.step_frame(-1))
+        self.ui.btn_video_next.clicked.connect(lambda: self._video.step_frame(1))
+        self.ui.btn_video_capture.clicked.connect(self._video.capture_frame)
+        self.ui.video_scrubber.valueChanged.connect(self._video.on_scrubber_moved)
         self.ui.file_list.itemClicked.connect(self.load_image)
         self.ui.check_class_list.itemClicked.connect(self._check.on_class_selected)
         self.ui.check_view.itemDoubleClicked.connect(self._check.on_item_double_clicked)
@@ -496,7 +518,11 @@ class SimpleLabeler(QMainWindow):
         return True
 
     def _on_nav(self, mode: str):
-        """Switch between label / check / video views."""
+        """Switch between label / check / video / model_check views."""
+        if mode != "video":
+            self._video.pause()
+        if mode != "model_check":
+            self._mc.pause()
         if mode == "check":
             if not self._require_image_dir():
                 self.ui.btn_nav_label.setChecked(True)
@@ -506,10 +532,17 @@ class SimpleLabeler(QMainWindow):
             self._check.exit()
             self.ui.center_stack.setCurrentIndex(0)
             self.ui.bottom_left_stack.setCurrentIndex(0)
-        else:  # video
+        elif mode == "video":
             self._check.exit()
             self.ui.center_stack.setCurrentIndex(2)
             self.ui.bottom_left_stack.setCurrentIndex(2)
+            self.ui.btn_extract_frames.setEnabled(self._video._cap is not None)
+        else:  # model_check
+            self._check.exit()
+            self.ui.center_stack.setCurrentIndex(3)
+            self.ui.bottom_left_stack.setCurrentIndex(3)
+        self.ui.toolbar_widget.setVisible(mode == "label")
+        self.ui.right_widget.setVisible(mode == "label")
 
     def _apply_mode_tool_state(self):
         """Enable only the draw tool that matches the current annotation mode."""

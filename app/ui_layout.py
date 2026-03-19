@@ -1,6 +1,7 @@
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QLabel, QWidget, QLineEdit,
-                               QStackedWidget, QSizePolicy, QButtonGroup)
+                               QStackedWidget, QSizePolicy, QButtonGroup, QSlider,
+                               QDoubleSpinBox)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QCursor, QPolygon
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, Signal
 
@@ -599,7 +600,7 @@ class Ui_MainWindow(object):
 
         # ── Nav column ────────────────────────────────────────────────────
         nav_widget = QWidget()
-        nav_widget.setFixedWidth(72)
+        nav_widget.setFixedWidth(90)
         nav_widget.setStyleSheet("background-color: #252526; border-right: 1px solid #333;")
         nav_layout = QVBoxLayout(nav_widget)
         nav_layout.setContentsMargins(4, 8, 4, 8)
@@ -612,10 +613,12 @@ class Ui_MainWindow(object):
             "QPushButton:hover:!checked { background:#3a3a3a; }"
         )
 
-        self.btn_nav_label = QPushButton("🏷️\nLabel")
-        self.btn_nav_check = QPushButton("🔍\nCheck")
-        self.btn_nav_video = QPushButton("🎬\nVideo")
-        for btn in (self.btn_nav_label, self.btn_nav_check, self.btn_nav_video):
+        self.btn_nav_label       = QPushButton("🏷️\nImage Label")
+        self.btn_nav_check       = QPushButton("🔍\nImage Check")
+        self.btn_nav_video       = QPushButton("🎬\nVideo Capture")
+        self.btn_nav_model_check = QPushButton("🤖\nModel Check")
+        for btn in (self.btn_nav_label, self.btn_nav_check,
+                    self.btn_nav_video, self.btn_nav_model_check):
             btn.setCheckable(True)
             btn.setFixedHeight(56)
             btn.setStyleSheet(_nav_style)
@@ -624,13 +627,15 @@ class Ui_MainWindow(object):
 
         self._nav_group = QButtonGroup(nav_widget)
         self._nav_group.setExclusive(True)
-        self._nav_group.addButton(self.btn_nav_label, 0)
-        self._nav_group.addButton(self.btn_nav_check, 1)
-        self._nav_group.addButton(self.btn_nav_video, 2)
+        self._nav_group.addButton(self.btn_nav_label,       0)
+        self._nav_group.addButton(self.btn_nav_check,       1)
+        self._nav_group.addButton(self.btn_nav_video,       2)
+        self._nav_group.addButton(self.btn_nav_model_check, 3)
 
         nav_layout.addWidget(self.btn_nav_label)
         nav_layout.addWidget(self.btn_nav_check)
         nav_layout.addWidget(self.btn_nav_video)
+        nav_layout.addWidget(self.btn_nav_model_check)
         nav_layout.addStretch()
 
         # ── Left panel ────────────────────────────────────────────────────
@@ -687,15 +692,106 @@ class Ui_MainWindow(object):
         page_video = QWidget()
         video_layout = QVBoxLayout(page_video)
         video_layout.setContentsMargins(0, 0, 0, 0)
-        lbl_vid = QLabel("Select a video to extract frames.")
-        lbl_vid.setWordWrap(True)
-        lbl_vid.setStyleSheet("color: gray; font-size: 10px;")
-        video_layout.addWidget(lbl_vid)
+        video_layout.setSpacing(6)
+
+        self.btn_open_video = QPushButton("📂 Open Video")
+        self.btn_open_video.setFixedHeight(36)
+        self.lbl_video_info = QLabel("No video loaded")
+        self.lbl_video_info.setWordWrap(True)
+        self.lbl_video_info.setStyleSheet("color: gray; font-size: 11px;")
+        self.btn_video_capture = QPushButton("📷 Capture Frame")
+        self.btn_video_capture.setFixedHeight(40)
+        self.btn_video_capture.setEnabled(False)
+        self.btn_video_capture.setStyleSheet(
+            "QPushButton { background-color: #37474f; color: white; font-weight: bold;"
+            " border-radius: 4px; }"
+            "QPushButton:hover { background-color: #455a64; }"
+            "QPushButton:disabled { background-color: #222; color: #484848; }"
+        )
+        self.btn_extract_frames = QPushButton("📸 Extract Frames…")
+        self.btn_extract_frames.setFixedHeight(32)
+        self.btn_extract_frames.setEnabled(False)
+
+        video_layout.addWidget(self.btn_open_video)
+        video_layout.addWidget(self.lbl_video_info)
+        video_layout.addSpacing(8)
+        video_layout.addWidget(self.btn_video_capture)
+        video_layout.addSpacing(4)
+        video_layout.addWidget(self.btn_extract_frames)
         video_layout.addStretch()
+
+        # Model Check left panel (page 3)
+        page_mc = QWidget()
+        mc_layout = QVBoxLayout(page_mc)
+        mc_layout.setContentsMargins(0, 0, 0, 0)
+        mc_layout.setSpacing(6)
+
+        self.btn_mc_open_video = QPushButton("📂 Open Video")
+        self.btn_mc_open_video.setFixedHeight(36)
+        self.lbl_mc_video_info = QLabel("No video loaded")
+        self.lbl_mc_video_info.setWordWrap(True)
+        self.lbl_mc_video_info.setStyleSheet("color: gray; font-size: 11px;")
+
+        _mc_sep_style = "background:#444; max-height:1px; min-height:1px; margin:2px 0;"
+        sep_a = QWidget(); sep_a.setStyleSheet(_mc_sep_style)
+
+        self.btn_mc_load_model = QPushButton("🤖 Load Model (.pt)")
+        self.btn_mc_load_model.setFixedHeight(36)
+        self.lbl_mc_model_info = QLabel("No model loaded")
+        self.lbl_mc_model_info.setWordWrap(True)
+        self.lbl_mc_model_info.setStyleSheet("color: gray; font-size: 11px;")
+
+        mc_conf_row = QHBoxLayout()
+        mc_conf_row.addWidget(QLabel("Conf:"))
+        self.mc_conf_spin = QDoubleSpinBox()
+        self.mc_conf_spin.setRange(0.01, 1.0)
+        self.mc_conf_spin.setSingleStep(0.05)
+        self.mc_conf_spin.setValue(0.25)
+        self.mc_conf_spin.setFixedWidth(85)
+        mc_conf_row.addWidget(self.mc_conf_spin)
+        mc_conf_row.addStretch()
+
+        sep_b = QWidget(); sep_b.setStyleSheet(_mc_sep_style)
+
+        self.mc_detection_list = QListWidget()
+        self.mc_detection_list.setStyleSheet(
+            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; }"
+            "QListWidget::item:selected { background:#1565c0; color:white; }"
+        )
+        self.btn_mc_delete_det = QPushButton("🗑 Delete Selected")
+        self.btn_mc_delete_det.setFixedHeight(28)
+        self.btn_mc_delete_det.setStyleSheet(
+            "background-color: #b71c1c; color: white; border-radius: 3px;")
+
+        sep_c = QWidget(); sep_c.setStyleSheet(_mc_sep_style)
+
+        self.btn_mc_capture = QPushButton("📷 Capture + Save Labels")
+        self.btn_mc_capture.setFixedHeight(44)
+        self.btn_mc_capture.setEnabled(False)
+        self.btn_mc_capture.setStyleSheet(
+            "QPushButton { background-color: #1565c0; color: white; font-weight: bold;"
+            " border-radius: 5px; }"
+            "QPushButton:hover { background-color: #1976d2; }"
+            "QPushButton:disabled { background-color: #222; color: #484848; }"
+        )
+
+        mc_layout.addWidget(self.btn_mc_open_video)
+        mc_layout.addWidget(self.lbl_mc_video_info)
+        mc_layout.addWidget(sep_a)
+        mc_layout.addWidget(self.btn_mc_load_model)
+        mc_layout.addWidget(self.lbl_mc_model_info)
+        mc_layout.addLayout(mc_conf_row)
+        mc_layout.addWidget(sep_b)
+        mc_layout.addWidget(QLabel("Detections:"))
+        mc_layout.addWidget(self.mc_detection_list, stretch=1)
+        mc_layout.addWidget(self.btn_mc_delete_det)
+        mc_layout.addWidget(sep_c)
+        mc_layout.addWidget(self.btn_mc_capture)
 
         self.bottom_left_stack.addWidget(page_files)   # index 0
         self.bottom_left_stack.addWidget(page_check)   # index 1
         self.bottom_left_stack.addWidget(page_video)   # index 2
+        self.bottom_left_stack.addWidget(page_mc)      # index 3
 
         self.left_bar.addWidget(self.btn_img_dir)
         self.left_bar.addWidget(self.lbl_img_path)
@@ -731,10 +827,10 @@ class Ui_MainWindow(object):
         )
         _sep_style = "background:#444; max-width:1px; min-width:1px; margin:4px 6px;"
 
-        toolbar_widget = QWidget()
-        toolbar_widget.setFixedHeight(40)
-        toolbar_widget.setStyleSheet("background-color: #252526; border-bottom: 1px solid #333;")
-        toolbar_layout = QHBoxLayout(toolbar_widget)
+        self.toolbar_widget = QWidget()
+        self.toolbar_widget.setFixedHeight(40)
+        self.toolbar_widget.setStyleSheet("background-color: #252526; border-bottom: 1px solid #333;")
+        toolbar_layout = QHBoxLayout(self.toolbar_widget)
         toolbar_layout.setContentsMargins(8, 4, 8, 4)
         toolbar_layout.setSpacing(4)
 
@@ -803,14 +899,108 @@ class Ui_MainWindow(object):
             "QListWidget::item:selected { background-color: #6a1b9a; color: white; }"
         )
 
-        video_center = QLabel("🎬  Video Mode — Coming Soon")
-        video_center.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        video_center.setStyleSheet("color: #666; font-size: 18px;")
+        # Video page: frame display + playback bar
+        video_page = QWidget()
+        video_page_layout = QVBoxLayout(video_page)
+        video_page_layout.setContentsMargins(0, 0, 0, 0)
+        video_page_layout.setSpacing(0)
+
+        self.video_frame_label = QLabel()
+        self.video_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_frame_label.setStyleSheet("background-color: #111;")
+        self.video_frame_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+        # Playback bar
+        playback_bar = QWidget()
+        playback_bar.setFixedHeight(44)
+        playback_bar.setStyleSheet("background-color: #1e1e1e; border-top: 1px solid #333;")
+        pb_layout = QHBoxLayout(playback_bar)
+        pb_layout.setContentsMargins(8, 4, 8, 4)
+        pb_layout.setSpacing(6)
+
+        self.btn_video_prev    = QPushButton("⏮")
+        self.btn_video_play    = QPushButton("▶  Play")
+        self.btn_video_next    = QPushButton("⏭")
+        self.video_scrubber    = QSlider(Qt.Orientation.Horizontal)
+        self.lbl_video_counter = QLabel("0 / 0")
+
+        self.lbl_video_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")
+        self.lbl_video_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        for btn in (self.btn_video_prev, self.btn_video_play, self.btn_video_next):
+            btn.setFixedHeight(30)
+            btn.setEnabled(False)
+
+        self.video_scrubber.setEnabled(False)
+        self.video_scrubber.setStyleSheet(
+            "QSlider::groove:horizontal { height:4px; background:#444; border-radius:2px; }"
+            "QSlider::handle:horizontal { width:12px; height:12px; margin:-4px 0;"
+            " background:#aaa; border-radius:6px; }"
+            "QSlider::sub-page:horizontal { background:#2980b9; border-radius:2px; }"
+        )
+
+        pb_layout.addWidget(self.btn_video_prev)
+        pb_layout.addWidget(self.btn_video_play)
+        pb_layout.addWidget(self.btn_video_next)
+        pb_layout.addWidget(self.video_scrubber, stretch=1)
+        pb_layout.addWidget(self.lbl_video_counter)
+
+        video_page_layout.addWidget(self.video_frame_label, stretch=1)
+        video_page_layout.addWidget(playback_bar)
+
+        # Model Check center page (index 3)
+        mc_page = QWidget()
+        mc_page_layout = QVBoxLayout(mc_page)
+        mc_page_layout.setContentsMargins(0, 0, 0, 0)
+        mc_page_layout.setSpacing(0)
+
+        self.mc_frame_label = QLabel()
+        self.mc_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.mc_frame_label.setStyleSheet("background-color: #111;")
+        self.mc_frame_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+
+        mc_playback_bar = QWidget()
+        mc_playback_bar.setFixedHeight(44)
+        mc_playback_bar.setStyleSheet("background-color: #1e1e1e; border-top: 1px solid #333;")
+        mc_pb_layout = QHBoxLayout(mc_playback_bar)
+        mc_pb_layout.setContentsMargins(8, 4, 8, 4)
+        mc_pb_layout.setSpacing(6)
+
+        self.btn_mc_prev    = QPushButton("⏮")
+        self.btn_mc_play    = QPushButton("▶  Play")
+        self.btn_mc_next    = QPushButton("⏭")
+        self.mc_scrubber    = QSlider(Qt.Orientation.Horizontal)
+        self.lbl_mc_counter = QLabel("0 / 0")
+
+        self.lbl_mc_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")
+        self.lbl_mc_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        for btn in (self.btn_mc_prev, self.btn_mc_play, self.btn_mc_next):
+            btn.setFixedHeight(30)
+            btn.setEnabled(False)
+
+        self.mc_scrubber.setEnabled(False)
+        self.mc_scrubber.setStyleSheet(
+            "QSlider::groove:horizontal { height:4px; background:#444; border-radius:2px; }"
+            "QSlider::handle:horizontal { width:12px; height:12px; margin:-4px 0;"
+            " background:#aaa; border-radius:6px; }"
+            "QSlider::sub-page:horizontal { background:#2980b9; border-radius:2px; }"
+        )
+
+        mc_pb_layout.addWidget(self.btn_mc_prev)
+        mc_pb_layout.addWidget(self.btn_mc_play)
+        mc_pb_layout.addWidget(self.btn_mc_next)
+        mc_pb_layout.addWidget(self.mc_scrubber, stretch=1)
+        mc_pb_layout.addWidget(self.lbl_mc_counter)
+
+        mc_page_layout.addWidget(self.mc_frame_label, stretch=1)
+        mc_page_layout.addWidget(mc_playback_bar)
 
         self.center_stack = QStackedWidget()
         self.center_stack.addWidget(self.canvas)      # index 0
         self.center_stack.addWidget(self.check_view)  # index 1
-        self.center_stack.addWidget(video_center)     # index 2
+        self.center_stack.addWidget(video_page)       # index 2
+        self.center_stack.addWidget(mc_page)          # index 3
 
         # ── Right panel ───────────────────────────────────────────────────
         self.right_bar = QVBoxLayout()
@@ -844,7 +1034,7 @@ class Ui_MainWindow(object):
         center_vbox = QVBoxLayout(center_container)
         center_vbox.setContentsMargins(0, 0, 0, 0)
         center_vbox.setSpacing(0)
-        center_vbox.addWidget(toolbar_widget)
+        center_vbox.addWidget(self.toolbar_widget)
         center_vbox.addWidget(self.center_stack)
 
         # Compose
@@ -852,8 +1042,8 @@ class Ui_MainWindow(object):
         self.main_layout.addWidget(left_widget, stretch=1)
         self.main_layout.addWidget(center_container, stretch=4)
 
-        right_widget = QWidget()
-        right_widget.setLayout(self.right_bar)
-        self.main_layout.addWidget(right_widget, stretch=1)
+        self.right_widget = QWidget()
+        self.right_widget.setLayout(self.right_bar)
+        self.main_layout.addWidget(self.right_widget, stretch=1)
 
         MainWindow.setCentralWidget(self.central_widget)
