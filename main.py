@@ -55,6 +55,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_draw_mode.clicked.connect(self._toggle_draw_mode)
         self.ui.btn_polygon_mode.clicked.connect(self._toggle_polygon_mode)
         self.ui.btn_delete_image.clicked.connect(self._delete_current_image)
+        self.ui.btn_clean_labels.clicked.connect(self._clean_orphaned_labels)
         self.ui.btn_mode_det.clicked.connect(lambda: self._on_annotation_mode_changed("detection"))
         self.ui.btn_mode_seg.clicked.connect(lambda: self._on_annotation_mode_changed("segmentation"))
         self.ui.btn_convert_to_seg.clicked.connect(self._convert_to_seg)
@@ -71,6 +72,9 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_mc_prev.clicked.connect(lambda: self._mc.step_frame(-1))
         self.ui.btn_mc_next.clicked.connect(lambda: self._mc.step_frame(1))
         self.ui.mc_scrubber.valueChanged.connect(self._mc.on_scrubber_moved)
+        self.ui.mc_frame_input.returnPressed.connect(self._mc.jump_to_frame_input)
+        self.ui.mc_conf_spin.valueChanged.connect(self._mc.on_conf_changed)
+        self.ui.mc_class_filter.currentTextChanged.connect(self._mc.filter_detections)
         self.ui.btn_mc_delete_det.clicked.connect(self._mc.delete_detection)
         self.ui.btn_mc_capture.clicked.connect(self._mc.capture_with_labels)
         # Video mode controls
@@ -81,6 +85,7 @@ class SimpleLabeler(QMainWindow):
         self.ui.btn_video_next.clicked.connect(lambda: self._video.step_frame(1))
         self.ui.btn_video_capture.clicked.connect(self._video.capture_frame)
         self.ui.video_scrubber.valueChanged.connect(self._video.on_scrubber_moved)
+        self.ui.video_frame_input.returnPressed.connect(self._video.jump_to_frame_input)
         self.ui.file_list.itemClicked.connect(self.load_image)
         self.ui.check_class_list.itemClicked.connect(self._check.on_class_selected)
         self.ui.check_view.itemDoubleClicked.connect(self._check.on_item_double_clicked)
@@ -107,6 +112,20 @@ class SimpleLabeler(QMainWindow):
             focused = QApplication.focusWidget()
             if not isinstance(focused, QLineEdit):
                 key = event.key()
+                in_label = self.ui.btn_nav_label.isChecked()
+                in_video = self.ui.btn_nav_video.isChecked()
+                in_mc    = self.ui.btn_nav_model_check.isChecked()
+
+                if in_video or in_mc:
+                    if key == self._nav_prev:
+                        (self._video if in_video else self._mc).step_frame(-1)
+                        return True
+                    if key == self._nav_next:
+                        (self._video if in_video else self._mc).step_frame(1)
+                        return True
+
+                if not in_label:
+                    return super().eventFilter(obj, event)
                 if key == self._nav_prev:
                     self._switch_image(-1)
                     return True
@@ -206,13 +225,7 @@ class SimpleLabeler(QMainWindow):
             if self.ui.btn_nav_check.isChecked():
                 self._check.enter()
             # Reload labels for the currently displayed image
-            if self.current_img_name and self.ui.canvas.original_size:
-                txt_path = self._txt_path_for(self.current_img_name)
-                shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
-                self.ui.canvas.shapes        = shapes
-                self.ui.canvas.shape_classes = shape_classes
-                self.ui.canvas.update()
-                self._refresh_shape_list()
+            self._reload_shapes()
 
     def load_image(self, item):
         """Switch image: autosave current, load new image, restore existing labels."""
@@ -273,6 +286,8 @@ class SimpleLabeler(QMainWindow):
                 os.remove(txt_path)
             return
         io_labels.save_yolo(txt_path, canvas.shapes, canvas.shape_classes)
+        self.statusBar().showMessage(
+            f"Saved: {os.path.basename(txt_path)}  ({len(canvas.shapes)} shape(s))", 2000)
 
     def _txt_has_other_mode_labels(self, txt_path: str) -> bool:
         """Return True if the .txt contains lines that belong to the OTHER annotation mode."""
@@ -428,6 +443,62 @@ class SimpleLabeler(QMainWindow):
             self.ui.canvas.set_image(QPixmap())
             self.ui.shape_list.clear()
 
+    def _clean_orphaned_labels(self):
+        """Delete .txt label files in save_dir that have no matching image in image_dir."""
+        if not self.save_dir or not os.path.isdir(self.save_dir):
+            QMessageBox.warning(self, "No Label Directory",
+                                "Please select a label directory first.")
+            return
+        if not self.image_dir or not os.path.isdir(self.image_dir):
+            QMessageBox.warning(self, "No Image Directory",
+                                "Please select an image directory first.")
+            return
+
+        img_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp'}
+        existing_stems = {
+            os.path.splitext(f)[0]
+            for f in os.listdir(self.image_dir)
+            if os.path.splitext(f)[1].lower() in img_extensions
+        }
+
+        orphans = [
+            f for f in os.listdir(self.save_dir)
+            if f.lower().endswith('.txt') and f != 'classes.txt'
+            and os.path.splitext(f)[0] not in existing_stems
+        ]
+
+        if not orphans:
+            QMessageBox.information(self, "Clean Orphaned Labels",
+                                    "No orphaned label files found.")
+            return
+
+        reply = QMessageBox.question(
+            self, "Clean Orphaned Labels",
+            f"Found {len(orphans)} label file(s) with no matching image:\n\n"
+            + "\n".join(orphans[:20])
+            + ("\n…" if len(orphans) > 20 else "")
+            + "\n\nPermanently delete these files?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        deleted, failed = 0, []
+        for fname in orphans:
+            try:
+                os.remove(os.path.join(self.save_dir, fname))
+                deleted += 1
+            except OSError as e:
+                failed.append(f"{fname}: {e}")
+
+        msg = f"Deleted {deleted} orphaned label file(s)."
+        if failed:
+            msg += "\n\nFailed to delete:\n" + "\n".join(failed)
+            QMessageBox.warning(self, "Clean Orphaned Labels", msg)
+        else:
+            self.statusBar().showMessage(msg, 4000)
+
     # ── Class management ──────────────────────────────────────────────────────
 
     def add_class(self):
@@ -504,6 +575,17 @@ class SimpleLabeler(QMainWindow):
         for i in range(len(self.ui.canvas.shapes)):
             self.ui.shape_list.addItem(self._shape_label(i))
 
+    def _reload_shapes(self):
+        """Reload YOLO labels for the current image into canvas and shape list."""
+        if not self.current_img_name or not self.ui.canvas.original_size:
+            return
+        txt_path = self._txt_path_for(self.current_img_name)
+        shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
+        self.ui.canvas.shapes        = shapes
+        self.ui.canvas.shape_classes = shape_classes
+        self.ui.canvas.update()
+        self._refresh_shape_list()
+
     # ── Check mode ───────────────────────────────────────────────────────────
 
     def _require_image_dir(self) -> bool:
@@ -571,13 +653,8 @@ class SimpleLabeler(QMainWindow):
         self._save_session()
         if self.ui.btn_nav_check.isChecked():
             self._check.enter()   # rebuild check view with new mode
-        elif self.current_img_name:
-            txt_path = self._txt_path_for(self.current_img_name)
-            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
-            self.ui.canvas.shapes        = shapes
-            self.ui.canvas.shape_classes = shape_classes
-            self.ui.canvas.update()
-            self._refresh_shape_list()
+        else:
+            self._reload_shapes()
 
     def _convert_to_seg(self):
         if not self.save_dir:
@@ -602,13 +679,7 @@ class SimpleLabeler(QMainWindow):
             return
         QMessageBox.information(self, "Convert Complete",
                                 f"Converted {count} bounding box(es) to polygon format.")
-        if self.current_img_name:
-            txt_path = self._txt_path_for(self.current_img_name)
-            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
-            self.ui.canvas.shapes        = shapes
-            self.ui.canvas.shape_classes = shape_classes
-            self.ui.canvas.update()
-            self._refresh_shape_list()
+        self._reload_shapes()
 
     def _convert_to_det(self):
         if not self.save_dir:
@@ -641,13 +712,7 @@ class SimpleLabeler(QMainWindow):
             return
         QMessageBox.information(self, "Convert Complete",
                                 f"Converted {count} polygon(s) to bounding box format.")
-        if self.current_img_name:
-            txt_path = self._txt_path_for(self.current_img_name)
-            shapes, shape_classes = io_labels.load_yolo(txt_path, self.annotation_mode)
-            self.ui.canvas.shapes        = shapes
-            self.ui.canvas.shape_classes = shape_classes
-            self.ui.canvas.update()
-            self._refresh_shape_list()
+        self._reload_shapes()
 
     # ── Auto annotate ─────────────────────────────────────────────────────────
 
@@ -659,7 +724,8 @@ class SimpleLabeler(QMainWindow):
                                 "Please select a label directory first.")
             return
 
-        dlg = AutoAnnotateDialog(self, annotation_mode=self.annotation_mode)
+        dlg = AutoAnnotateDialog(self, annotation_mode=self.annotation_mode,
+                                 image_dir=self.image_dir)
         if dlg.exec() != AutoAnnotateDialog.DialogCode.Accepted:
             return
 

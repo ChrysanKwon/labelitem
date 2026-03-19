@@ -234,13 +234,14 @@ def convert_seg_to_det(label_dir: str) -> int:
 
 def export_yolo_dataset(image_dir: str, label_dir: str, class_names: list,
                         output_dir: str, train_ratio: float = 0.8,
-                        seed: int = 42) -> tuple[int, int]:
+                        seed: int = 42,
+                        exclude_unlabeled: bool = False) -> tuple[int, int]:
     """
     Split ALL images in image_dir into train/val sets and write a YOLO dataset:
       output_dir/train/images/  output_dir/train/labels/
       output_dir/val/images/    output_dir/val/labels/
       output_dir/classes.txt
-    Unlabeled images are included without a .txt (treated as background by YOLO).
+    If exclude_unlabeled=True, images without a .txt file are skipped entirely.
     Returns (n_train, n_val).
     """
     import random, shutil
@@ -248,6 +249,11 @@ def export_yolo_dataset(image_dir: str, label_dir: str, class_names: list,
     img_exts = {'.jpg', '.jpeg', '.png'}
     all_imgs = sorted(f for f in os.listdir(image_dir)
                       if os.path.splitext(f)[1].lower() in img_exts)
+
+    if exclude_unlabeled:
+        all_imgs = [f for f in all_imgs
+                    if os.path.exists(os.path.join(label_dir,
+                                                   os.path.splitext(f)[0] + '.txt'))]
 
     rng = random.Random(seed)
     rng.shuffle(all_imgs)
@@ -275,12 +281,13 @@ def export_yolo_dataset(image_dir: str, label_dir: str, class_names: list,
 
 def export_coco_dataset(image_dir: str, label_dir: str, class_names: list,
                         output_dir: str, train_ratio: float = 0.8,
-                        seed: int = 42) -> tuple[int, int]:
+                        seed: int = 42,
+                        exclude_unlabeled: bool = False) -> tuple[int, int]:
     """
     Split ALL images in image_dir into train/valid sets and write a COCO dataset:
       output_dir/train/  (images + _annotations.coco.json)
       output_dir/valid/  (images + _annotations.coco.json)
-    Unlabeled images are included with no annotations in the JSON.
+    If exclude_unlabeled=True, images without a .txt file are skipped entirely.
     Auto-detects detection (bbox) or segmentation (polygon) format from labels.
     Raises ValueError if both formats are present in the label folder.
     Returns (n_train, n_val).
@@ -302,6 +309,11 @@ def export_coco_dataset(image_dir: str, label_dir: str, class_names: list,
     img_exts = {'.jpg', '.jpeg', '.png'}
     all_imgs = sorted(f for f in os.listdir(image_dir)
                       if os.path.splitext(f)[1].lower() in img_exts)
+
+    if exclude_unlabeled:
+        all_imgs = [f for f in all_imgs
+                    if os.path.exists(os.path.join(label_dir,
+                                                   os.path.splitext(f)[0] + '.txt'))]
 
     rng = random.Random(seed)
     rng.shuffle(all_imgs)

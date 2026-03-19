@@ -1,7 +1,8 @@
 """Export dataset dialog."""
 from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
                                QComboBox, QSpinBox, QLineEdit, QPushButton,
-                               QLabel, QDialogButtonBox, QFileDialog, QMessageBox)
+                               QLabel, QDialogButtonBox, QFileDialog, QMessageBox,
+                               QCheckBox)
 from PySide6.QtCore import Qt
 import os
 from . import io_labels
@@ -93,6 +94,16 @@ class ExportDialog(QDialog):
             warn.setStyleSheet('color: #e65100; font-size: 11px;')
             layout.addWidget(warn)
 
+        # Exclude unlabeled option
+        self.chk_exclude_unlabeled = QCheckBox("Exclude images without labels")
+        self.chk_exclude_unlabeled.setChecked(False)
+        if self._unlabeled > 0:
+            self.chk_exclude_unlabeled.setToolTip(
+                f"{self._unlabeled} image(s) have no labels — check to skip them during export")
+        else:
+            self.chk_exclude_unlabeled.setEnabled(False)
+        layout.addWidget(self.chk_exclude_unlabeled)
+
         layout.addSpacing(8)
 
         # OK / Cancel
@@ -121,20 +132,23 @@ class ExportDialog(QDialog):
             QMessageBox.warning(self, 'No Images', 'No images found in the image directory.')
             return
 
-        fmt         = self.fmt.currentText()
-        train_ratio = self.train_spin.value() / 100
-        seed        = self.seed_spin.value()
+        fmt              = self.fmt.currentText()
+        train_ratio      = self.train_spin.value() / 100
+        seed             = self.seed_spin.value()
+        exclude_unlabeled = self.chk_exclude_unlabeled.isChecked()
 
         try:
             if fmt == 'YOLO':
                 n_train, n_val = io_labels.export_yolo_dataset(
                     self.image_dir, self.label_dir, self.class_names,
-                    output_dir, train_ratio, seed
+                    output_dir, train_ratio, seed,
+                    exclude_unlabeled=exclude_unlabeled,
                 )
             else:
                 n_train, n_val = io_labels.export_coco_dataset(
                     self.image_dir, self.label_dir, self.class_names,
-                    output_dir, train_ratio, seed
+                    output_dir, train_ratio, seed,
+                    exclude_unlabeled=exclude_unlabeled,
                 )
         except Exception as e:
             QMessageBox.critical(self, 'Export Failed', str(e))

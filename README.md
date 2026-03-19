@@ -23,7 +23,8 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
 
 ### Navigation
 - **Image Label / Image Check / Video Capture / Model Check** — switch views using the nav column on the left
-- Arrow keys or A/D to navigate between images (configurable in `app/config.json`)
+- Arrow keys (← →) or A/D to navigate between images in Image Label mode (configurable in `app/config.json`)
+- Arrow keys also step frames one at a time in Video Capture and Model Check modes
 
 ### Image Check
 - Browse crops of a selected class across all images in a gallery view
@@ -43,27 +44,35 @@ A lightweight YOLO image annotation tool built with PySide6. Supports both detec
   - Detection labels → `bbox` field, empty `segmentation`
   - Segmentation labels → `segmentation` polygon + `bbox` bounding rect
   - Mixed folder (some files bbox, others polygon) → blocked with a warning
+- **Exclude images without labels** — optional checkbox to skip unlabeled images from the export
 
 ### Video Capture
 - Load a video and scrub through it using a playback bar (⏮ ⏯ ⏭ + slider)
+- Type a frame number directly in the input box next to the counter and press Enter to jump to that frame
 - **Capture Frame** — save the current frame as a JPEG to the image folder; the file is immediately added to the file list
 - **Extract Frames…** — batch-extract N frames by evenly spaced or random sampling into the image folder
 
 ### Model Check
 - Load a video + any Ultralytics `.pt` model to review inference results frame by frame
 - Scrub to any frame; inference fires automatically 400 ms after scrubbing stops
+- Inference runs once per frame at conf=0.01 and caches all detections — adjusting the **Conf:** spinner re-filters the cache instantly without re-running the model
+- **Class filter** — dropdown above the detection list to show only one class at a time
 - Detected objects listed in the sidebar with class name and confidence score
+- Type a frame number in the input box next to the counter and press Enter to jump directly to that frame
 - **Delete Selected** — remove a false positive from the list; the overlay redraws instantly
 - **Capture + Save Labels** — saves the frame as JPEG and writes the remaining (corrected) detections as a YOLO `.txt` label, both ready for further annotation in Image Label mode
 - Supports both detection models (bounding boxes) and segmentation models (polygon masks)
-- Adjustable confidence threshold via the **Conf:** spinner
+- Model and video file dialogs track their own last-used directories independently
 
 ### Image Label — other features
 - **Unassigned shape warning** — if any shape has no class assigned when switching images, a dialog prompts to go back or skip (unassigned shapes are never saved to file)
 - **Undo / Redo** — Ctrl+Z / Ctrl+Shift+Z, per-image history (50 steps)
 - **Delete Image & Label** — removes image and .txt together with double confirmation (keyboard: Ctrl+Delete, or the button in the file list)
+- **Clean Orphaned Labels** — scans the label directory for `.txt` files with no matching image and deletes them after confirmation; useful after manually removing images outside the app
 - **Session persistence** — remembers last image dir, label dir, and annotation mode across restarts
+- **Label dir auto-sync** — selecting an image directory automatically sets the label directory to the same folder. If you need a separate label folder, select it **after** setting the image directory. The setting is remembered across restarts.
 - **Safe-delete protection** — switching images in Segmentation mode will never delete detection labels that happen to be invisible in the current mode (and vice versa)
+- **Status bar** — bottom of the window shows save confirmations, inference results, and capture events
 
 ---
 
@@ -108,16 +117,18 @@ python main.py
 
 ## Hotkeys
 
-| Action | Key |
-|--------|-----|
-| Previous image | `←` or `A` |
-| Next image | `→` or `D` |
-| Toggle rect draw (Detection) | `W` |
-| Toggle polygon draw (Segmentation) | `P` |
-| Delete selected shape | `Delete` / `Backspace` |
-| Undo | `Ctrl+Z` |
-| Redo | `Ctrl+Shift+Z` |
-| Delete image & label | `Ctrl+Delete` |
+| Action | Key | Mode |
+|--------|-----|------|
+| Previous image | `←` or `A` | Image Label |
+| Next image | `→` or `D` | Image Label |
+| Previous frame | `←` or `A` | Video Capture / Model Check |
+| Next frame | `→` or `D` | Video Capture / Model Check |
+| Toggle rect draw | `W` | Image Label (Detection) |
+| Toggle polygon draw | `P` | Image Label (Segmentation) |
+| Delete selected shape | `Delete` / `Backspace` | Image Label |
+| Undo | `Ctrl+Z` | Image Label |
+| Redo | `Ctrl+Shift+Z` | Image Label |
+| Delete image & label | `Ctrl+Delete` | Image Label |
 
 > Navigation key scheme (`arrows` or `ad`) can be changed in `app/config.json` via the `nav_keys` setting.
 
@@ -141,6 +152,9 @@ labelitem/
     video_mode.py              VideoModeController — Video Capture playback and frame extraction
     frame_extract_dialog.py    Batch frame extraction dialog (evenly spaced / random)
     model_check.py             ModelCheckController — inference overlay, false positive removal
+    video_utils.py             Shared video open + BGR→QPixmap helpers
+    video_playback_base.py     Shared base class for video playback controllers
+    inference_utils.py         Shared YOLO result parsing (detections + shapes)
 ```
 
 ---
@@ -150,14 +164,13 @@ labelitem/
 - **Label format isolation** — Detection mode only loads/saves 5-field lines; Segmentation mode only loads/saves odd-field (≥7) lines. Switching modes never silently overwrites the other format's data.
 - **Mixed labels** — if a label folder has some files in bbox format and others in polygon format, Convert and COCO Export will warn and refuse to proceed. Use the convert buttons to unify the folder first.
 - **Corrupted labels** — if a single .txt contains both bbox and polygon lines, Convert and Export will refuse with an error.
-- **Unlabeled images** — included in dataset export; treated as background by YOLO trainers. A warning is shown before export.
+- **Unlabeled images** — included in dataset export by default; treated as background by YOLO trainers. A warning is shown before export, and an option to exclude them is available in the Export dialog.
 - **Auto Annotate batch size** — default 400 images per batch. Reduce `annotate_batch_size` in `app/config.json` if it crashes.
 - **Undo/Redo** — scoped to the current image; cleared on image switch.
 - **Unassigned shapes** — shapes with no class assigned are never written to disk. Switching images while unassigned shapes exist triggers a warning; choose **Go Back** to assign them or **Skip & Discard** to proceed without saving them.
 - **Image Check** — label counts and gallery update when switching annotation mode mid-session.
 - **Model Check labels** — captured frames are saved to the image folder; corresponding `.txt` labels (with deleted detections excluded) are saved to the label folder. Both are immediately visible in Image Label mode.
-
----
+- **Orphaned labels** — `.txt` files whose image has been deleted outside the app accumulate silently. Use **Clean Orphaned Labels** in the file list panel to find and remove them. Export already ignores orphaned labels automatically.
 
 ---
 

@@ -2,6 +2,7 @@
 
 import os, gc
 from app import io_labels
+from app.inference_utils import parse_result_shapes
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QDoubleSpinBox, QFileDialog, QFrame, QButtonGroup,
@@ -100,22 +101,7 @@ class AnnotateWorker(QObject):
             try:
                 results = model.predict(img_path, conf=self.conf, verbose=False)
                 result  = results[0]
-                shapes, shape_classes = [], []
-
-                if self.annotation_mode == 'segmentation' and result.masks is not None:
-                    for i, mask in enumerate(result.masks):
-                        cls_idx = int(result.boxes.cls[i].item())
-                        pts = [(float(x), float(y)) for x, y in mask.xyn[0]]
-                        if len(pts) >= 3:
-                            shapes.append(pts)
-                            shape_classes.append(cls_idx)
-                elif result.boxes is not None:
-                    for box in result.boxes:
-                        cls_idx = int(box.cls[0].item())
-                        cx, cy, nw, nh = box.xywhn[0].tolist()
-                        if nw > 0 and nh > 0:
-                            shapes.append((cx, cy, nw, nh))
-                            shape_classes.append(cls_idx)
+                shapes, shape_classes = parse_result_shapes(result, self.annotation_mode)
 
                 txt_path = os.path.join(self.save_dir, os.path.splitext(fname)[0] + ".txt")
                 if shapes:
@@ -137,11 +123,13 @@ class AnnotateWorker(QObject):
 # ── Settings dialog ────────────────────────────────────────────────────────────
 
 class AutoAnnotateDialog(QDialog):
-    def __init__(self, parent=None, annotation_mode: str = 'detection'):
+    def __init__(self, parent=None, annotation_mode: str = 'detection',
+                 image_dir: str = ""):
         super().__init__(parent)
         self.setWindowTitle("Auto Annotate")
         self.setMinimumWidth(440)
         self.model_path = ""
+        self._image_dir = image_dir
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -227,7 +215,7 @@ class AutoAnnotateDialog(QDialog):
 
     def _browse_model(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select YOLO model", "", "PyTorch model (*.pt)"
+            self, "Select YOLO model", self._image_dir, "PyTorch model (*.pt)"
         )
         if path:
             self.model_path = path

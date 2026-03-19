@@ -1,7 +1,9 @@
+import copy
+
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QLabel, QWidget, QLineEdit,
                                QStackedWidget, QSizePolicy, QButtonGroup, QSlider,
-                               QDoubleSpinBox)
+                               QDoubleSpinBox, QComboBox)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QCursor, QPolygon
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, Signal
 
@@ -114,7 +116,6 @@ class Canvas(QLabel):
     # ── Undo / Redo ──────────────────────────────────────────────────────────
 
     def save_snapshot(self):
-        import copy
         self._history.append((copy.deepcopy(self.shapes), list(self.shape_classes)))
         self._redo_stack.clear()
         if len(self._history) > 50:
@@ -123,7 +124,6 @@ class Canvas(QLabel):
     def undo(self) -> bool:
         if not self._history:
             return False
-        import copy
         self._redo_stack.append((copy.deepcopy(self.shapes), list(self.shape_classes)))
         self.shapes, self.shape_classes = self._history.pop()
         self.selected_index = -1
@@ -135,7 +135,6 @@ class Canvas(QLabel):
     def redo(self) -> bool:
         if not self._redo_stack:
             return False
-        import copy
         self._history.append((copy.deepcopy(self.shapes), list(self.shape_classes)))
         self.shapes, self.shape_classes = self._redo_stack.pop()
         self.selected_index = -1
@@ -682,6 +681,12 @@ class Ui_MainWindow(object):
             "background-color: #b71c1c; color: white; border-radius: 3px;")
         files_layout.addWidget(self.btn_delete_image)
 
+        self.btn_clean_labels = QPushButton("🧹  Clean Orphaned Labels")
+        self.btn_clean_labels.setFixedHeight(28)
+        self.btn_clean_labels.setStyleSheet(
+            "background-color: #4a148c; color: white; border-radius: 3px;")
+        files_layout.addWidget(self.btn_clean_labels)
+
         page_check = QWidget()
         check_layout = QVBoxLayout(page_check)
         check_layout.setContentsMargins(0, 0, 0, 0)
@@ -782,7 +787,19 @@ class Ui_MainWindow(object):
         mc_layout.addWidget(self.lbl_mc_model_info)
         mc_layout.addLayout(mc_conf_row)
         mc_layout.addWidget(sep_b)
-        mc_layout.addWidget(QLabel("Detections:"))
+
+        mc_det_header = QHBoxLayout()
+        mc_det_header.addWidget(QLabel("Detections:"))
+        self.mc_class_filter = QComboBox()
+        self.mc_class_filter.addItem("All")
+        self.mc_class_filter.setStyleSheet(
+            "QComboBox { background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:11px; }"
+            "QComboBox::drop-down { border:none; }"
+            "QComboBox QAbstractItemView { background:#2d2d2d; color:#ccc; }"
+        )
+        mc_det_header.addWidget(self.mc_class_filter)
+        mc_layout.addLayout(mc_det_header)
         mc_layout.addWidget(self.mc_detection_list, stretch=1)
         mc_layout.addWidget(self.btn_mc_delete_det)
         mc_layout.addWidget(sep_c)
@@ -922,7 +939,16 @@ class Ui_MainWindow(object):
         self.btn_video_play    = QPushButton("▶  Play")
         self.btn_video_next    = QPushButton("⏭")
         self.video_scrubber    = QSlider(Qt.Orientation.Horizontal)
+        self.video_frame_input = QLineEdit()
         self.lbl_video_counter = QLabel("0 / 0")
+
+        self.video_frame_input.setFixedWidth(55)
+        self.video_frame_input.setPlaceholderText("frame")
+        self.video_frame_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.video_frame_input.setStyleSheet(
+            "background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:11px;")
+        self.video_frame_input.setEnabled(False)
 
         self.lbl_video_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")
         self.lbl_video_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -943,6 +969,7 @@ class Ui_MainWindow(object):
         pb_layout.addWidget(self.btn_video_play)
         pb_layout.addWidget(self.btn_video_next)
         pb_layout.addWidget(self.video_scrubber, stretch=1)
+        pb_layout.addWidget(self.video_frame_input)
         pb_layout.addWidget(self.lbl_video_counter)
 
         video_page_layout.addWidget(self.video_frame_label, stretch=1)
@@ -970,7 +997,16 @@ class Ui_MainWindow(object):
         self.btn_mc_play    = QPushButton("▶  Play")
         self.btn_mc_next    = QPushButton("⏭")
         self.mc_scrubber    = QSlider(Qt.Orientation.Horizontal)
+        self.mc_frame_input = QLineEdit()
         self.lbl_mc_counter = QLabel("0 / 0")
+
+        self.mc_frame_input.setFixedWidth(55)
+        self.mc_frame_input.setPlaceholderText("frame")
+        self.mc_frame_input.setAlignment(Qt.AlignmentFlag.AlignRight)
+        self.mc_frame_input.setStyleSheet(
+            "background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:11px;")
+        self.mc_frame_input.setEnabled(False)
 
         self.lbl_mc_counter.setStyleSheet("color: #aaa; font-size: 11px; min-width: 80px;")
         self.lbl_mc_counter.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
@@ -991,6 +1027,7 @@ class Ui_MainWindow(object):
         mc_pb_layout.addWidget(self.btn_mc_play)
         mc_pb_layout.addWidget(self.btn_mc_next)
         mc_pb_layout.addWidget(self.mc_scrubber, stretch=1)
+        mc_pb_layout.addWidget(self.mc_frame_input)
         mc_pb_layout.addWidget(self.lbl_mc_counter)
 
         mc_page_layout.addWidget(self.mc_frame_label, stretch=1)
