@@ -73,11 +73,12 @@ class ModelCheckController(VideoPlaybackBase):
                                  "Please run:  pip install ultralytics")
             return
 
-        model_dir = os.path.dirname(self._model_path) or os.path.expanduser("~")
+        model_dir = os.path.dirname(self._model_path) or ""
         path, _ = QFileDialog.getOpenFileName(
             self._mw, "Load YOLO Model",
             model_dir,
             "YOLO model (*.pt)",
+            options=QFileDialog.Option.DontUseNativeDialog,
         )
         if not path:
             return
@@ -328,6 +329,8 @@ class ModelCheckController(VideoPlaybackBase):
         try:
             frame_1based = int(text.split("|")[0].replace("Frame", "").strip())
             self._show_frame(frame_1based - 1)
+            if self._model:
+                self._run_inference()   # draw overlay on this scan frame
         except ValueError:
             pass
 
