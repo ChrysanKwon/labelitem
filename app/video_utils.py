@@ -40,8 +40,12 @@ def open_capture(parent_widget, initial_dir: str = ""):
     return cap, path, stem, fps, total
 
 
-def bgr_to_pixmap(frame_bgr, target_size):
-    """Convert a BGR numpy frame to a QPixmap scaled to target_size (QSize)."""
+def bgr_to_pixmap(frame_bgr, target_size=None):
+    """Convert a BGR numpy frame to a QPixmap.
+
+    If target_size (QSize) is given the pixmap is scaled to fit it while
+    keeping aspect ratio.  When omitted the full-resolution pixmap is returned.
+    """
     import cv2
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QImage, QPixmap
@@ -49,8 +53,11 @@ def bgr_to_pixmap(frame_bgr, target_size):
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
     h, w, ch = rgb.shape
     qi = QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888)
-    return QPixmap.fromImage(qi).scaled(
-        target_size,
-        Qt.AspectRatioMode.KeepAspectRatio,
-        Qt.TransformationMode.SmoothTransformation,
-    )
+    pm = QPixmap.fromImage(qi)
+    if target_size is not None:
+        return pm.scaled(
+            target_size,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+    return pm

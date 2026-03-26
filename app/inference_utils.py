@@ -27,6 +27,8 @@ def parse_result_detections(result, model_names: dict) -> list:
             })
     elif result.boxes is not None:
         for box in result.boxes:
+            if not len(box.cls) or not len(box.conf):
+                continue
             cls_idx  = int(box.cls[0].item())
             conf_val = float(box.conf[0].item())
             cx, cy, nw, nh = box.xywhn[0].tolist()
@@ -57,6 +59,8 @@ def parse_result_shapes(result, annotation_mode: str) -> tuple:
                 shape_classes.append(cls_idx)
     elif result.boxes is not None:
         for box in result.boxes:
+            if not len(box.cls):
+                continue
             cls_idx = int(box.cls[0].item())
             cx, cy, nw, nh = box.xywhn[0].tolist()
             if nw > 0 and nh > 0:

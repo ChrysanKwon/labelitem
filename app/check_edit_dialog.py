@@ -38,7 +38,7 @@ class CheckEditDialog(QDialog):
         self.annotation_mode  = annotation_mode
         self.delete_requested = False   # set True if user chose to delete image+label
 
-        self.setWindowTitle(f"Edit — {image_path.split('/')[-1].split(chr(92))[-1]}")
+        self.setWindowTitle(f"Edit — {os.path.basename(image_path)}")
         self.resize(1100, 700)
         self.setMinimumSize(700, 450)
 

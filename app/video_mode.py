@@ -21,7 +21,7 @@ class VideoModeController(VideoPlaybackBase):
     # ── Slots (called from main.py) ───────────────────────────────────────────
 
     def open_video(self):
-        result = self._load_video_cap(os.path.dirname(self._path) or os.path.expanduser("~"))
+        result = self._load_video_cap(os.path.dirname(self._path))
         if result is None:
             return
 
@@ -65,7 +65,7 @@ class VideoModeController(VideoPlaybackBase):
     def open_extract_dialog(self):
         dlg = FrameExtractDialog(
             self._mw,
-            video_path=getattr(self, '_path', ''),
+            video_path=self._path,
             image_dir=self._image_dir,
         )
         if dlg.exec() == FrameExtractDialog.DialogCode.Accepted:

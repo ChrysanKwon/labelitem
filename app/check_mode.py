@@ -38,7 +38,10 @@ class CheckModeController:
     # ── Public entry points (called from main.py) ─────────────────────────
 
     def enter(self):
-        """Switch UI to Check Mode and populate the class list."""
+        """Switch UI to Label Review and populate the class list."""
+        from PySide6.QtWidgets import QApplication
+        self._mw.statusBar().showMessage("Loading images, please wait…")
+        QApplication.processEvents()
         self._ui.center_stack.setCurrentIndex(1)
         self._ui.bottom_left_stack.setCurrentIndex(1)
 
@@ -53,6 +56,7 @@ class CheckModeController:
         if self._ui.check_class_list.count() > 0:
             self._ui.check_class_list.setCurrentRow(0)
             self.refresh_view(0)
+        self._mw.statusBar().clearMessage()
 
     def exit(self):
         """Clear check view (nav column controls actual stack switching)."""

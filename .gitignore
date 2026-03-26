@@ -15,6 +15,9 @@ app/config.json
 # Model weights
 *.pt
 
+# Playback cache (auto-generated, cleared on exit)
+.mc_cache/
+
 # Temporary / debug scripts
 debug*/
 test*/

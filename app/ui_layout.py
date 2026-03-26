@@ -3,7 +3,7 @@ import copy
 from PySide6.QtWidgets import (QVBoxLayout, QHBoxLayout, QPushButton,
                                QListWidget, QLabel, QWidget, QLineEdit,
                                QStackedWidget, QSizePolicy, QButtonGroup, QSlider,
-                               QDoubleSpinBox, QComboBox, QProgressBar)
+                               QDoubleSpinBox, QSpinBox, QComboBox, QProgressBar)
 from PySide6.QtGui import QPainter, QPen, QColor, QBrush, QCursor, QPolygon
 from PySide6.QtCore import Qt, QRect, QPoint, QSize, Signal
 
@@ -587,6 +587,30 @@ class Canvas(QLabel):
                     painter.drawEllipse(pt, 4, 4)
 
 
+class VideoFrameLabel(QLabel):
+    """QLabel that always scales its stored source pixmap to fit on resize."""
+
+    def __init__(self):
+        super().__init__()
+        self._src_pixmap = None
+
+    def setPixmap(self, pixmap):           # noqa: N802
+        self._src_pixmap = pixmap
+        self._rescale()
+
+    def resizeEvent(self, event):          # noqa: N802
+        super().resizeEvent(event)
+        self._rescale()
+
+    def _rescale(self):
+        if self._src_pixmap and not self._src_pixmap.isNull():
+            super().setPixmap(self._src_pixmap.scaled(
+                self.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+
+
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
         MainWindow.setWindowTitle("LabelItem")
@@ -613,7 +637,7 @@ class Ui_MainWindow(object):
         )
 
         self.btn_nav_label       = QPushButton("🏷️\nImage Label")
-        self.btn_nav_check       = QPushButton("🔍\nImage Check")
+        self.btn_nav_check       = QPushButton("🔍\nLabel Review")
         self.btn_nav_video       = QPushButton("🎬\nVideo Capture")
         self.btn_nav_model_check = QPushButton("🤖\nModel Check")
         for btn in (self.btn_nav_label, self.btn_nav_check,
@@ -636,6 +660,25 @@ class Ui_MainWindow(object):
         nav_layout.addWidget(self.btn_nav_video)
         nav_layout.addWidget(self.btn_nav_model_check)
         nav_layout.addStretch()
+
+        _nav_util_style = (
+            "QPushButton { background:transparent; color:#666; border-radius:6px;"
+            " font-size:10px; padding:4px 2px; }"
+            "QPushButton:hover { background:#2a2a2a; color:#aaa; }"
+        )
+        self.btn_settings = QPushButton("⚙️\nSettings")
+        self.btn_settings.setFixedHeight(48)
+        self.btn_settings.setStyleSheet(_nav_util_style)
+        nav_layout.addWidget(self.btn_settings)
+
+        self.btn_restart = QPushButton("🔄\nRestart")
+        self.btn_restart.setFixedHeight(48)
+        self.btn_restart.setStyleSheet(
+            "QPushButton { background:transparent; color:#666; border-radius:6px;"
+            " font-size:10px; padding:4px 2px; }"
+            "QPushButton:hover { background:#3a2020; color:#e57373; }"
+        )
+        nav_layout.addWidget(self.btn_restart)
 
         # ── Left panel ────────────────────────────────────────────────────
         left_widget = QWidget()
@@ -759,22 +802,20 @@ class Ui_MainWindow(object):
         sep_b = QWidget(); sep_b.setStyleSheet(_mc_sep_style)
 
         # ── Mode toggle ───────────────────────────────────────────────────────
-        _toggle_base = (
-            "QPushButton { border:1px solid #555; color:#aaa; padding:4px 0;"
-            " font-size:12px; font-weight:bold; }"
-            "QPushButton:checked { background:#1565c0; color:white; border-color:#1565c0; }"
-            "QPushButton:hover:!checked { background:#2a2a2a; }"
+        _mc_mode_style = (
+            "QPushButton { border:1px solid #555; border-radius:4px; color:#ccc;"
+            " padding:4px 10px; background:#2d2d2d; }"
+            "QPushButton:checked { background:#1565c0; color:white; font-weight:bold; border-color:#1565c0; }"
+            "QPushButton:hover:!checked { background:#3a3a3a; }"
+            "QPushButton:disabled { color:#484848; border-color:#333; background:#222; }"
         )
-        self.btn_mc_mode_frame = QPushButton("▶  Frame")
+        self.btn_mc_mode_frame = QPushButton("▶ Frame")
         self.btn_mc_mode_frame.setCheckable(True)
         self.btn_mc_mode_frame.setChecked(True)
-        self.btn_mc_mode_frame.setStyleSheet(
-            _toggle_base + "QPushButton { border-radius:4px 0 0 4px; background:#1e1e1e; }")
-        self.btn_mc_mode_scan  = QPushButton("📊  Scan")
+        self.btn_mc_mode_frame.setStyleSheet(_mc_mode_style)
+        self.btn_mc_mode_scan  = QPushButton("📊 Scan")
         self.btn_mc_mode_scan.setCheckable(True)
-        self.btn_mc_mode_scan.setStyleSheet(
-            _toggle_base + "QPushButton { border-radius:0 4px 4px 0; background:#1e1e1e;"
-            " border-left:none; }")
+        self.btn_mc_mode_scan.setStyleSheet(_mc_mode_style)
         self.mc_mode_group = QButtonGroup()
         self.mc_mode_group.setExclusive(True)
         self.mc_mode_group.addButton(self.btn_mc_mode_frame, 0)
@@ -810,8 +851,11 @@ class Ui_MainWindow(object):
 
         self.mc_detection_list = QListWidget()
         self.mc_detection_list.setStyleSheet(
-            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; }"
-            "QListWidget::item:selected { background:#1565c0; color:white; }"
+            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; outline:none; }"
+            "QListWidget::item:selected { background:#2a2a2a; color:white;"
+            " border-left:3px solid #1565c0; outline:none; }"
+            "QListWidget::item:selected:!active { background:#2a2a2a; color:white;"
+            " border-left:3px solid #1565c0; }"
         )
         frame_layout.addWidget(self.mc_detection_list, stretch=1)
 
@@ -867,15 +911,17 @@ class Ui_MainWindow(object):
         scan_filter_row = QHBoxLayout()
         scan_filter_row.setSpacing(6)
         self.mc_scan_class_combo = QComboBox()
-        self.mc_scan_class_combo.addItem("All")
+        self.mc_scan_class_combo.addItem("Total")
         self.mc_scan_class_combo.setStyleSheet(_combo_style)
-        self.mc_scan_count_input = QLineEdit()
-        self.mc_scan_count_input.setPlaceholderText("count")
+        self.mc_scan_count_input = QSpinBox()
+        self.mc_scan_count_input.setRange(0, 9999)
+        self.mc_scan_count_input.setValue(0)
         self.mc_scan_count_input.setFixedWidth(68)
         self.mc_scan_count_input.setAlignment(Qt.AlignmentFlag.AlignRight)
         self.mc_scan_count_input.setStyleSheet(
-            "background:#2d2d2d; color:#ccc; border:1px solid #444;"
-            " border-radius:3px; padding:1px 4px; font-size:10pt;"
+            "QSpinBox { background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; padding:1px 4px; font-size:10pt; }"
+            "QSpinBox::up-button, QSpinBox::down-button { width:0; border:none; }"
         )
         scan_filter_row.addWidget(self.mc_scan_class_combo, stretch=1)
         scan_filter_row.addWidget(QLabel("="))
@@ -884,20 +930,62 @@ class Ui_MainWindow(object):
 
         self.mc_scan_list = QListWidget()
         self.mc_scan_list.setStyleSheet(
-            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; }"
-            "QListWidget::item:selected { background:#2e7d32; color:white; }"
+            "QListWidget { background:#1e1e1e; color:#ccc; border:1px solid #333; outline:none; }"
+            "QListWidget::item:selected { background:#2a2a2a; color:white;"
+            " border-left:3px solid #2e7d32; outline:none; }"
+            "QListWidget::item:selected:!active { background:#2a2a2a; color:white;"
+            " border-left:3px solid #2e7d32; }"
         )
         scan_layout.addWidget(self.mc_scan_list, stretch=1)
+
+        _scan_action_style = (
+            "QPushButton { background:#2d2d2d; color:#ccc; border:1px solid #444;"
+            " border-radius:3px; font-size:10pt; }"
+            "QPushButton:hover { background:#3a3a3a; }"
+            "QPushButton:disabled { color:#484848; border-color:#333; background:#222; }"
+        )
+        scan_action_row = QHBoxLayout()
+        scan_action_row.setSpacing(4)
+        self.btn_mc_chart = QPushButton("📈 Chart")
+        self.btn_mc_chart.setFixedHeight(28)
+        self.btn_mc_chart.setEnabled(False)
+        self.btn_mc_chart.setStyleSheet(_scan_action_style)
+        self.btn_mc_export = QPushButton("📊 Export")
+        self.btn_mc_export.setFixedHeight(28)
+        self.btn_mc_export.setEnabled(False)
+        self.btn_mc_export.setStyleSheet(_scan_action_style)
+        scan_action_row.addWidget(self.btn_mc_chart)
+        scan_action_row.addWidget(self.btn_mc_export)
+        scan_layout.addLayout(scan_action_row)
+
         self.mc_mode_stack.addWidget(page_scan)   # index 1
+
+        self.btn_mc_export_video = QPushButton("🎬 Export Annotated Video")
+        self.btn_mc_export_video.setFixedHeight(36)
+        self.btn_mc_export_video.setEnabled(False)
+        self.btn_mc_export_video.setStyleSheet(
+            "QPushButton { background:#1a3a2a; color:#80cbc4; font-weight:bold;"
+            " border-radius:5px; border:1px solid #2e7d62; }"
+            "QPushButton:hover { background:#1e4d38; }"
+            "QPushButton:disabled { background:#222; color:#484848; border-color:#333; }"
+        )
+        self.mc_export_progress = QProgressBar()
+        self.mc_export_progress.setFixedHeight(6)
+        self.mc_export_progress.setTextVisible(False)
+        self.mc_export_progress.setStyleSheet(
+            "QProgressBar { border:none; background:#333; border-radius:3px; }"
+            "QProgressBar::chunk { background:#80cbc4; border-radius:3px; }"
+        )
+        self.mc_export_progress.setVisible(False)
 
         mc_layout.addWidget(self.btn_mc_open_video)
         mc_layout.addWidget(self.lbl_mc_video_info)
         mc_layout.addWidget(sep_a)
         mc_layout.addWidget(self.btn_mc_load_model)
         mc_layout.addWidget(self.lbl_mc_model_info)
-        mc_layout.addLayout(mc_conf_row)
+        mc_layout.addWidget(self.btn_mc_export_video)
+        mc_layout.addWidget(self.mc_export_progress)
         mc_layout.addWidget(sep_b)
-        mc_layout.addLayout(mc_mode_row)
         mc_layout.addWidget(self.mc_mode_stack, stretch=1)
 
         self.bottom_left_stack.addWidget(page_files)   # index 0
@@ -1076,7 +1164,7 @@ class Ui_MainWindow(object):
         mc_page_layout.setContentsMargins(0, 0, 0, 0)
         mc_page_layout.setSpacing(0)
 
-        self.mc_frame_label = QLabel()
+        self.mc_frame_label = VideoFrameLabel()
         self.mc_frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.mc_frame_label.setStyleSheet("background-color: #111;")
         self.mc_frame_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
@@ -1161,12 +1249,30 @@ class Ui_MainWindow(object):
         self.btn_del_class.setFixedHeight(32)
         self.right_bar.addWidget(self.btn_del_class)
 
+        # ── Model Check toolbar ────────────────────────────────────────────────
+        self.mc_toolbar_widget = QWidget()
+        self.mc_toolbar_widget.setFixedHeight(40)
+        self.mc_toolbar_widget.setStyleSheet(
+            "background-color: #252526; border-bottom: 1px solid #333;")
+        mc_tl = QHBoxLayout(self.mc_toolbar_widget)
+        mc_tl.setContentsMargins(8, 4, 8, 4)
+        mc_tl.setSpacing(4)
+        mc_tl.addWidget(self.btn_mc_mode_frame)
+        mc_tl.addWidget(self.btn_mc_mode_scan)
+        _mc_vs = QWidget(); _mc_vs.setStyleSheet(_sep_style)
+        mc_tl.addWidget(_mc_vs)
+        mc_tl.addWidget(QLabel("Conf:"))
+        mc_tl.addWidget(self.mc_conf_spin)
+        mc_tl.addStretch()
+        self.mc_toolbar_widget.setVisible(False)
+
         # Wrap toolbar + center_stack in a single vertical container
         center_container = QWidget()
         center_vbox = QVBoxLayout(center_container)
         center_vbox.setContentsMargins(0, 0, 0, 0)
         center_vbox.setSpacing(0)
         center_vbox.addWidget(self.toolbar_widget)
+        center_vbox.addWidget(self.mc_toolbar_widget)
         center_vbox.addWidget(self.center_stack)
 
         # Compose

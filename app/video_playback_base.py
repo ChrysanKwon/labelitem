@@ -4,6 +4,7 @@ import os
 
 from PySide6.QtCore import QTimer
 
+from app import config
 from app.video_utils import open_capture, bgr_to_pixmap
 
 
@@ -94,12 +95,14 @@ class VideoPlaybackBase:
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
-    def _load_video_cap(self, initial_dir: str = ""):
+    def _load_video_cap(self, initial_dir: str = "", _cfg_key: str = "last_video_path"):
         """Open a video file dialog and populate shared playback state.
 
         Returns (cap, path, stem, fps, total) on success, None on cancel.
         Also resets play state and updates the play button label.
         """
+        if not initial_dir:
+            initial_dir = os.path.dirname(config.load().get(_cfg_key, ""))
         result = open_capture(self._mw, initial_dir)
         if result is None:
             return None
@@ -108,6 +111,7 @@ class VideoPlaybackBase:
         cap, path, stem, fps, total = result
         self._cap           = cap
         self._path          = path
+        cfg = config.load(); cfg[_cfg_key] = path; config.save(cfg)
         self._stem          = stem
         self._fps           = fps
         self._total_frames  = total
@@ -150,7 +154,7 @@ class VideoPlaybackBase:
         self._current_frame_bgr = frame
 
         self._frame_label.setPixmap(
-            bgr_to_pixmap(frame, self._frame_label.size()))
+            bgr_to_pixmap(self._render_frame(idx, frame)))
 
         self._scrubber.blockSignals(True)
         self._scrubber.setValue(idx)
@@ -161,6 +165,10 @@ class VideoPlaybackBase:
         self._counter_label.setText(f"{idx + 1} / {self._total_frames}")
 
         self._on_frame_shown(idx, frame)
+
+    def _render_frame(self, idx: int, frame):
+        """Hook to modify frame before display. Override to draw overlays."""
+        return frame
 
     def _on_frame_shown(self, idx: int, frame):
         """Hook called after each frame is rendered. Override in subclasses."""
